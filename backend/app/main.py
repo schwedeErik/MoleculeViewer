@@ -88,11 +88,13 @@ def points(
         """
         SELECT
           id,
+          rank,
           ST_X(geom) AS lng,
           ST_Y(geom) AS lat
         FROM molecules
         WHERE rank <= :rank_max
           AND geom && ST_MakeEnvelope(:minLng, :minLat, :maxLng, :maxLat, 4326)
+        ORDER BY rank ASC, id ASC
         LIMIT :limit;
         """
     )
@@ -113,6 +115,7 @@ def points(
             p.id = int(row.id)
             p.lng = float(row.lng)
             p.lat = float(row.lat)
+            p.rank = int(row.rank)
 
     return Response(
         content=out.SerializeToString(),

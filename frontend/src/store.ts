@@ -11,17 +11,17 @@ type ViewState = {
 type AppState = {
   apiBase: string;
   rankMax: number;
-  tileLimit: number;
+  viewLimit: number;
   viewState: ViewState;
   setRankMax: (rankMax: number) => void;
-  setTileLimit: (tileLimit: number) => void;
+  setViewLimit: (viewLimit: number) => void;
   setViewState: (viewState: ViewState) => void;
 };
 
 export const useAppStore = create<AppState>((set) => ({
   apiBase: 'http://localhost:8000',
   rankMax: 3,
-  tileLimit: 50000,
+  viewLimit: 50000,
   viewState: {
     longitude: 10,
     latitude: 50,
@@ -30,7 +30,7 @@ export const useAppStore = create<AppState>((set) => ({
     bearing: 0
   },
   setRankMax: (rankMax) => set({ rankMax }),
-  setTileLimit: (tileLimit) => set({ tileLimit }),
+  setViewLimit: (viewLimit) => set({ viewLimit }),
   setViewState: (viewState) => set({ viewState })
 }));
 

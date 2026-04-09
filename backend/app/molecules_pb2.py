@@ -19,7 +19,7 @@ def _build_file_descriptor_proto() -> _descriptor_pb2.FileDescriptorProto:
     fd.package = "molecule"
     fd.syntax = "proto3"
 
-    # message Point { int64 id = 1; double lng = 2; double lat = 3; }
+    # message Point { int64 id = 1; double lng = 2; double lat = 3; int32 rank = 4; }
     msg_point = fd.message_type.add()
     msg_point.name = "Point"
 
@@ -40,6 +40,12 @@ def _build_file_descriptor_proto() -> _descriptor_pb2.FileDescriptorProto:
     f_lat.number = 3
     f_lat.label = _descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL
     f_lat.type = _descriptor_pb2.FieldDescriptorProto.TYPE_DOUBLE
+
+    f_rank = msg_point.field.add()
+    f_rank.name = "rank"
+    f_rank.number = 4
+    f_rank.label = _descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL
+    f_rank.type = _descriptor_pb2.FieldDescriptorProto.TYPE_INT32
 
     # message Points { repeated Point points = 1; }
     msg_points = fd.message_type.add()
