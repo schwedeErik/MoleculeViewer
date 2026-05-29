@@ -1,0 +1,226 @@
+import DeckGL from '@deck.gl/react';
+import { MapView, WebMercatorViewport } from '@deck.gl/core';
+import { ScatterplotLayer } from '@deck.gl/layers';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useAppStore } from './store';
+import { decodePointsPb, type DecodedPoint } from './proto';
+
+function rankColor(rank: number): [number, number, number, number] {
+  if (rank <= 1) return [0, 200, 255, 220];
+  if (rank === 2) return [0, 255, 120, 210];
+  if (rank === 3) return [255, 200, 0, 200];
+  return [255, 255, 255, 160];
+}
+
+export type ScatterplotViewProps = {
+  onBack: () => void;
+};
+
+export function ScatterplotView({ onBack }: ScatterplotViewProps) {
+  const apiBase = useAppStore((s) => s.apiBase);
+  const rankMax = useAppStore((s) => s.rankMax);
+  const viewLimit = useAppStore((s) => s.viewLimit);
+  const viewState = useAppStore((s) => s.viewState);
+  const setViewState = useAppStore((s) => s.setViewState);
+  const setRankMax = useAppStore((s) => s.setRankMax);
+  const setViewLimit = useAppStore((s) => s.setViewLimit);
+
+  const cacheRef = useRef<Map<string, DecodedPoint>>(new Map());
+  const stickyIdsRef = useRef<Set<string>>(new Set());
+  const prevZoomRef = useRef<number>(viewState.zoom);
+  const [viewPoints, setViewPoints] = useState<DecodedPoint[]>([]);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    const t = window.setTimeout(async () => {
+      try {
+        if (viewState.zoom < prevZoomRef.current - 0.001) {
+          stickyIdsRef.current.clear();
+        }
+        prevZoomRef.current = viewState.zoom;
+
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+        const vp = new WebMercatorViewport({
+          width,
+          height,
+          longitude: viewState.longitude,
+          latitude: viewState.latitude,
+          zoom: viewState.zoom,
+          pitch: viewState.pitch,
+          bearing: viewState.bearing
+        });
+
+        const pad = 200;
+        const nw = vp.unproject([-pad, -pad]);
+        const se = vp.unproject([width + pad, height + pad]);
+        const minLng = Math.min(nw[0], se[0]);
+        const maxLng = Math.max(nw[0], se[0]);
+        const minLat = Math.min(nw[1], se[1]);
+        const maxLat = Math.max(nw[1], se[1]);
+
+        const qs = new URLSearchParams({
+          minLng: String(minLng),
+          minLat: String(minLat),
+          maxLng: String(maxLng),
+          maxLat: String(maxLat),
+          limit: String(viewLimit),
+          rank_max: String(rankMax)
+        });
+
+        const res = await fetch(`${apiBase}/points.pb?${qs.toString()}`, {
+          signal: ac.signal
+        });
+        if (!res.ok) throw new Error(`points.pb ${res.status}`);
+        const buf = await res.arrayBuffer();
+        const fetched = decodePointsPb(buf);
+        for (const p of fetched) cacheRef.current.set(p.id, p);
+
+        const vnw = vp.unproject([0, 0]);
+        const vse = vp.unproject([width, height]);
+        const vMinLng = Math.min(vnw[0], vse[0]);
+        const vMaxLng = Math.max(vnw[0], vse[0]);
+        const vMinLat = Math.min(vnw[1], vse[1]);
+        const vMaxLat = Math.max(vnw[1], vse[1]);
+
+        const inView: DecodedPoint[] = [];
+        for (const p of cacheRef.current.values()) {
+          if (p.lng < vMinLng || p.lng > vMaxLng || p.lat < vMinLat || p.lat > vMaxLat) continue;
+          if (p.rank > rankMax) continue;
+          inView.push(p);
+        }
+
+        const byRankStickyThenId = (a: DecodedPoint, b: DecodedPoint) => {
+          if (a.rank !== b.rank) return a.rank - b.rank;
+          const aSticky = stickyIdsRef.current.has(a.id);
+          const bSticky = stickyIdsRef.current.has(b.id);
+          if (aSticky !== bSticky) return aSticky ? -1 : 1;
+          return a.id.localeCompare(b.id);
+        };
+
+        inView.sort(byRankStickyThenId);
+        const selected = inView.slice(0, viewLimit);
+
+        stickyIdsRef.current = new Set(selected.map((p) => p.id));
+        setViewPoints(selected);
+      } catch (e) {
+        if ((e as any)?.name === 'AbortError') return;
+        setViewPoints([]);
+      }
+    }, 150);
+
+    return () => {
+      ac.abort();
+      window.clearTimeout(t);
+    };
+  }, [apiBase, rankMax, viewLimit, viewState]);
+
+  useEffect(() => {
+    cacheRef.current.clear();
+    stickyIdsRef.current.clear();
+    setViewPoints([]);
+  }, [apiBase, rankMax, viewLimit]);
+
+  const layers = useMemo(() => {
+    return [
+      new ScatterplotLayer({
+        id: `molecules-view-${rankMax}-${viewLimit}`,
+        data: viewPoints,
+        getPosition: (d) => [d.lng, d.lat],
+        getRadius: 2,
+        radiusUnits: 'pixels',
+        radiusMinPixels: 1,
+        radiusMaxPixels: 4,
+        getFillColor: (d) => rankColor(d.rank),
+        opacity: 1,
+        pickable: false,
+        updateTriggers: {
+          data: viewPoints
+        }
+      })
+    ];
+  }, [rankMax, viewLimit, viewPoints]);
+
+  const btnStyle: CSSProperties = {
+    padding: '6px 12px',
+    fontSize: 13,
+    fontWeight: 500,
+    border: '1px solid #ccc',
+    borderRadius: 6,
+    background: '#f8f8f8',
+    cursor: 'pointer'
+  };
+
+  return (
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <div
+        style={{
+          padding: '8px 12px',
+          display: 'flex',
+          gap: 12,
+          alignItems: 'center',
+          borderBottom: '1px solid #eee',
+          background: '#fff',
+          position: 'relative',
+          zIndex: 10
+        }}
+      >
+        <button type="button" style={btnStyle} onClick={onBack}>
+          ← Dataset & embedding
+        </button>
+        <div style={{ fontWeight: 600 }}>Molecule Map</div>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span>rank ≤</span>
+          <input
+            type="range"
+            min={1}
+            max={3}
+            value={rankMax}
+            onChange={(e) => setRankMax(Number(e.target.value))}
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerMove={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onMouseMove={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
+            onTouchMove={(e) => e.stopPropagation()}
+          />
+          <span style={{ width: 18, textAlign: 'right' }}>{rankMax}</span>
+        </label>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span>max/view</span>
+          <input
+            type="range"
+            min={1000}
+            max={200000}
+            step={1000}
+            value={viewLimit}
+            onChange={(e) => setViewLimit(Number(e.target.value))}
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerMove={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onMouseMove={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
+            onTouchMove={(e) => e.stopPropagation()}
+          />
+          <span style={{ width: 64, textAlign: 'right' }}>
+            {viewLimit.toLocaleString()}
+          </span>
+        </label>
+        <div style={{ marginLeft: 'auto', color: '#666', fontSize: 12 }}>
+          Rendering points from {apiBase}
+        </div>
+      </div>
+
+      <div style={{ flex: 1, position: 'relative' }}>
+        <DeckGL
+          views={new MapView({ repeat: true })}
+          controller={true}
+          initialViewState={viewState}
+          viewState={viewState}
+          onViewStateChange={(e) => setViewState(e.viewState as any)}
+          layers={layers}
+        />
+      </div>
+    </div>
+  );
+}

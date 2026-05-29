@@ -16,8 +16,6 @@ This is a scaffold for a “Google Maps for molecules” style app:
 docker compose up -d db
 ```
 
-If `docker` isn’t installed, install Docker Engine (or use Podman + `podman-docker`), then rerun the command above.
-
 ### 2) Run backend (dev)
 
 ```bash

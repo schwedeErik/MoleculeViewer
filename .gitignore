@@ -49,3 +49,7 @@ postgres-data/
 .env
 .env.*
 
+# ---- Large data / embedding artifacts ----
+*.npz
+*.npy
+
