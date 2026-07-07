@@ -10,6 +10,7 @@ import {
 } from './rankLod';
 import { MoleculeMVTLayer } from './MoleculeMVTLayer';
 import { visibleTileOutlines } from './tileGrid';
+import type { DatasetInfo } from './types';
 
 /** Radius in map coordinate units (degrees here); scales with zoom automatically. */
 function pointRadiusFromBounds(bounds: {
@@ -39,6 +40,8 @@ export type ScatterplotViewProps = {
 
 export function ScatterplotView({ onBack }: ScatterplotViewProps) {
   const apiBase = useAppStore((s) => s.apiBase);
+  const datasetSlug = useAppStore((s) => s.datasetSlug);
+  const setDatasetSlug = useAppStore((s) => s.setDatasetSlug);
   const rankCap = useAppStore((s) => s.rankCap);
   const zoomLodAggressiveness = useAppStore((s) => s.zoomLodAggressiveness);
   const viewState = useAppStore((s) => s.viewState);
@@ -47,8 +50,9 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
   const setZoomLodAggressiveness = useAppStore((s) => s.setZoomLodAggressiveness);
 
   const [datasetRankMax, setDatasetRankMax] = useState(1);
+  const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
   const [pointRadius, setPointRadius] = useState(0.01);
-  const [showTileGrid, setShowTileGrid] = useState(true);
+  const [showTileGrid, setShowTileGrid] = useState(false);
 
   const tileZ = Math.floor(viewState.zoom);
   const activeRankMax = effectiveRankMax(
@@ -63,12 +67,31 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
     zoomLodAggressiveness
   );
   const lodParams = lodParamsForAggressiveness(zoomLodAggressiveness);
+  const activeDataset = datasets.find((d) => d.slug === datasetSlug);
 
   useEffect(() => {
     const ac = new AbortController();
     (async () => {
       try {
-        const res = await fetch(`${apiBase}/bounds`, { signal: ac.signal });
+        const res = await fetch(`${apiBase}/datasets`, { signal: ac.signal });
+        if (!res.ok) return;
+        setDatasets(await res.json());
+      } catch (e) {
+        if ((e as Error).name === 'AbortError') return;
+      }
+    })();
+    return () => ac.abort();
+  }, [apiBase]);
+
+  useEffect(() => {
+    if (!datasetSlug) return;
+    const ac = new AbortController();
+    (async () => {
+      try {
+        const res = await fetch(
+          `${apiBase}/bounds?dataset=${encodeURIComponent(datasetSlug)}`,
+          { signal: ac.signal }
+        );
         if (!res.ok) return;
         const b = await res.json();
         if (!b.count) return;
@@ -107,7 +130,7 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
       }
     })();
     return () => ac.abort();
-  }, [apiBase, setViewState, setRankCap]);
+  }, [apiBase, datasetSlug, setViewState, setRankCap]);
 
   const rankSliderMax = Math.max(1_000, datasetRankMax);
   const rankSliderMin = rankSliderMax <= 1_000 ? 1 : 1_000;
@@ -130,16 +153,18 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
     return visibleTileOutlines(vp.getBounds(), tileZ);
   }, [showTileGrid, viewState, tileZ]);
 
-  const tileParamsKey = `${rankSliderValue}:${zoomLodAggressiveness}`;
+  const tileParamsKey = `${datasetSlug}:${rankSliderValue}:${zoomLodAggressiveness}`;
 
   const moleculeLayer = useMemo(() => {
-    // Dummy query param busts cache when sliders change; rank_max is set per tile in getTileData.
+    if (!datasetSlug) return null;
+    // Dummy query param busts cache when sliders/dataset change; rank_max is set per tile in getTileData.
     const tileData = `${apiBase}/tiles/{z}/{x}/{y}.mvt?_k=${tileParamsKey}`;
 
     return new MoleculeMVTLayer({
       id: 'molecules-mvt',
       data: tileData,
       moleculeApiBase: apiBase,
+      datasetSlug,
       rankCap: rankSliderValue,
       datasetRankMax,
       zoomLodAggressiveness,
@@ -166,9 +191,18 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
         getPointRadius: pointRadius
       }
     } as ConstructorParameters<typeof MoleculeMVTLayer>[0]);
-  }, [apiBase, tileParamsKey, rankSliderValue, datasetRankMax, zoomLodAggressiveness, pointRadius]);
+  }, [
+    apiBase,
+    datasetSlug,
+    tileParamsKey,
+    rankSliderValue,
+    datasetRankMax,
+    zoomLodAggressiveness,
+    pointRadius
+  ]);
 
   const layers = useMemo(() => {
+    if (!moleculeLayer) return [];
     if (!showTileGrid) return [moleculeLayer];
 
     const outlineLayer = new PathLayer({
@@ -230,6 +264,28 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
           ← Dataset & embedding
         </button>
         <div style={{ fontWeight: 600 }}>Molecule Map</div>
+        {datasets.length > 0 && datasetSlug && (
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+            <span>dataset</span>
+            <select
+              value={datasetSlug}
+              onChange={(e) => setDatasetSlug(e.target.value)}
+              style={{
+                padding: '4px 8px',
+                fontSize: 13,
+                border: '1px solid #ccc',
+                borderRadius: 6,
+                background: '#fff'
+              }}
+            >
+              {datasets.map((d) => (
+                <option key={d.slug} value={d.slug}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
           <span>rank max</span>
           <input
@@ -277,9 +333,9 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
           tile grid
         </label>
         <div style={{ marginLeft: 'auto', color: '#666', fontSize: 12 }}>
-          rank ≤ {activeRankMax.toLocaleString()} (cap {rankSliderValue.toLocaleString()}) · zoom
-          budget {zoomRankMax.toLocaleString()} ({lodParams.base.toLocaleString()}×
-          {lodParams.growth}^z) · z={tileZ}
+          {activeDataset?.name ?? datasetSlug} · rank ≤ {activeRankMax.toLocaleString()} (cap{' '}
+          {rankSliderValue.toLocaleString()}) · zoom budget {zoomRankMax.toLocaleString()} (
+          {lodParams.base.toLocaleString()}×{lodParams.growth}^z) · z={tileZ}
         </div>
       </div>
 

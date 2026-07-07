@@ -1,24 +1,48 @@
-import { useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties } from 'react';
+import { DatasetUpload } from './DatasetUpload';
 import { ScatterplotView } from './ScatterplotView';
-
-const PLACEHOLDER_DATASETS = [
-  { value: 'zinc15-sample', label: 'ZINC15 (sample)' },
-  { value: 'chembl-lite', label: 'ChEMBL (placeholder)' }
-];
-
-const PLACEHOLDER_EMBEDDINGS = [
-  { value: 'umap-default', label: 'UMAP (default)' },
-  { value: 'pca-2d', label: 'PCA 2D (placeholder)' }
-];
+import { useAppStore } from './store';
+import { embeddingMethodLabel, type DatasetInfo } from './types';
 
 export function App() {
-  const [screen, setScreen] = useState<'setup' | 'scatterplot'>('setup');
-  const [dataset, setDataset] = useState(PLACEHOLDER_DATASETS[0].value);
-  const [embeddingStyle, setEmbeddingStyle] = useState(
-    PLACEHOLDER_EMBEDDINGS[0].value
-  );
+  const apiBase = useAppStore((s) => s.apiBase);
+  const datasetSlug = useAppStore((s) => s.datasetSlug);
+  const setDatasetSlug = useAppStore((s) => s.setDatasetSlug);
 
-  if (screen === 'scatterplot') {
+  const [screen, setScreen] = useState<'setup' | 'scatterplot'>('setup');
+  const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
+  const [selectedSlug, setSelectedSlug] = useState<string>('');
+  const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadDatasets = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${apiBase}/datasets`);
+      if (!res.ok) throw new Error(`Failed to load datasets (${res.status})`);
+      const data: DatasetInfo[] = await res.json();
+      setDatasets(data);
+      setSelectedSlug((prev) => {
+        if (prev && data.some((d) => d.slug === prev)) return prev;
+        if (datasetSlug && data.some((d) => d.slug === datasetSlug)) return datasetSlug;
+        return data[0]?.slug ?? '';
+      });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [apiBase, datasetSlug]);
+
+  useEffect(() => {
+    void loadDatasets();
+  }, [loadDatasets]);
+
+  const selectedDataset = datasets.find((d) => d.slug === selectedSlug);
+
+  if (screen === 'scatterplot' && datasetSlug) {
     return <ScatterplotView onBack={() => setScreen('setup')} />;
   }
 
@@ -51,10 +75,41 @@ export function App() {
     cursor: 'pointer'
   };
 
+  const canOpen =
+    !loading && !error && selectedSlug && (selectedDataset?.molecule_count ?? 0) > 0;
+
+  async function handleDelete() {
+    if (!selectedDataset) return;
+    const msg = `Delete "${selectedDataset.name}" and its ${selectedDataset.molecule_count.toLocaleString()} molecules? This cannot be undone.`;
+    if (!window.confirm(msg)) return;
+
+    setDeleting(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `${apiBase}/datasets/${encodeURIComponent(selectedDataset.slug)}`,
+        { method: 'DELETE' }
+      );
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = (body as { detail?: string }).detail;
+        throw new Error(detail ?? `Delete failed (${res.status})`);
+      }
+      if (datasetSlug === selectedDataset.slug) {
+        setDatasetSlug(null);
+      }
+      await loadDatasets();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <div
       style={{
-        height: '100%',
+        minHeight: '100%',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
@@ -78,8 +133,7 @@ export function App() {
           Molecule Map
         </h1>
         <p style={{ margin: '0 0 24px', fontSize: 14, color: '#666', lineHeight: 1.5 }}>
-          Choose a dataset and embedding style (placeholders for now), then open the
-          scatterplot view.
+          Choose a dataset loaded in PostgreSQL, or upload a new CSV export from the pipeline.
         </p>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -87,46 +141,84 @@ export function App() {
             <label htmlFor="dataset" style={labelStyle}>
               Dataset
             </label>
-            <select
-              id="dataset"
-              value={dataset}
-              onChange={(e) => setDataset(e.target.value)}
-              style={selectStyle}
-            >
-              {PLACEHOLDER_DATASETS.map((d) => (
-                <option key={d.value} value={d.value}>
-                  {d.label}
-                </option>
-              ))}
-            </select>
+            {loading ? (
+              <div style={{ fontSize: 14, color: '#666' }}>Loading datasets…</div>
+            ) : error ? (
+              <div style={{ fontSize: 14, color: '#c5221f' }}>{error}</div>
+            ) : datasets.length === 0 ? (
+              <div style={{ fontSize: 14, color: '#666' }}>
+                No datasets yet — upload a CSV below.
+              </div>
+            ) : (
+              <select
+                id="dataset"
+                value={selectedSlug}
+                onChange={(e) => setSelectedSlug(e.target.value)}
+                style={selectStyle}
+              >
+                {datasets.map((d) => (
+                  <option key={d.slug} value={d.slug}>
+                    {d.name} ({d.molecule_count.toLocaleString()} molecules)
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
 
-          <div style={fieldStyle}>
-            <label htmlFor="embedding" style={labelStyle}>
-              Embedding style
-            </label>
-            <select
-              id="embedding"
-              value={embeddingStyle}
-              onChange={(e) => setEmbeddingStyle(e.target.value)}
-              style={selectStyle}
-            >
-              {PLACEHOLDER_EMBEDDINGS.map((e) => (
-                <option key={e.value} value={e.value}>
-                  {e.label}
-                </option>
-              ))}
-            </select>
-          </div>
+          {selectedDataset && (
+            <div style={{ fontSize: 13, color: '#555', lineHeight: 1.5 }}>
+              <div>
+                <strong>Embedding:</strong>{' '}
+                {embeddingMethodLabel(selectedDataset.embedding_method)}
+              </div>
+              <div>
+                <strong>Slug:</strong> {selectedDataset.slug}
+              </div>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => void handleDelete()}
+                style={{
+                  marginTop: 10,
+                  padding: '6px 12px',
+                  fontSize: 13,
+                  border: '1px solid #e0b4b4',
+                  borderRadius: 6,
+                  background: '#fff',
+                  color: '#c5221f',
+                  cursor: deleting ? 'not-allowed' : 'pointer',
+                  opacity: deleting ? 0.6 : 1
+                }}
+              >
+                {deleting ? 'Deleting…' : 'Delete dataset'}
+              </button>
+            </div>
+          )}
         </div>
 
         <button
           type="button"
-          style={primaryBtn}
-          onClick={() => setScreen('scatterplot')}
+          style={{
+            ...primaryBtn,
+            opacity: canOpen ? 1 : 0.5,
+            cursor: canOpen ? 'pointer' : 'not-allowed'
+          }}
+          disabled={!canOpen}
+          onClick={() => {
+            setDatasetSlug(selectedSlug);
+            setScreen('scatterplot');
+          }}
         >
           Open scatterplot
         </button>
+
+        <DatasetUpload
+          apiBase={apiBase}
+          onUploaded={(dataset) => {
+            void loadDatasets();
+            setSelectedSlug(dataset.slug);
+          }}
+        />
       </div>
     </div>
   );

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, Query, Response
+from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
+from .datasets import delete_dataset, list_datasets, resolve_dataset_id, validate_slug
 from .db import engine
 from .molecules_pb2 import Points
+from .services.smiles_database import import_dataset_from_csv
 
 
 app = FastAPI(title="Molecule Map API")
@@ -14,7 +16,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -26,8 +28,59 @@ def health() -> dict:
     return {"ok": True}
 
 
+@app.get("/datasets")
+def datasets() -> list[dict]:
+    with engine.connect() as conn:
+        return list_datasets(conn)
+
+
+@app.post("/datasets")
+async def create_dataset(
+    file: UploadFile = File(...),
+    slug: str = Form(...),
+    name: str = Form(...),
+    embedding_method: str = Form("maccs"),
+) -> dict:
+    """Import a pipeline CSV (smiles, rank, lng, lat, embedding) as a new dataset."""
+    validate_slug(slug.strip())
+    if not name.strip():
+        raise HTTPException(status_code=400, detail="Name is required")
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Upload a .csv file")
+
+    try:
+        import io
+
+        text_stream = io.TextIOWrapper(file.file, encoding="utf-8", newline="")
+        count = import_dataset_from_csv(
+            text_stream,
+            slug=slug.strip(),
+            name=name.strip(),
+            embedding_method=embedding_method.strip() or "maccs",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Import failed: {exc}") from exc
+
+    with engine.connect() as conn:
+        rows = list_datasets(conn)
+    created = next((row for row in rows if row["slug"] == slug.strip()), None)
+    if not created:
+        raise HTTPException(status_code=500, detail="Dataset imported but not found")
+    return created
+
+
+@app.delete("/datasets/{slug}")
+def remove_dataset(slug: str) -> dict:
+    """Delete a dataset and all of its molecules."""
+    with engine.connect() as conn:
+        delete_dataset(conn, slug)
+    return {"ok": True, "slug": slug}
+
+
 @app.get("/bounds")
-def bounds() -> dict:
+def bounds(dataset: str = Query(..., min_length=1)) -> dict:
     sql = text(
         """
         SELECT
@@ -39,11 +92,16 @@ def bounds() -> dict:
           MAX(rank) AS max_rank,
           COUNT(*)::int AS count
         FROM molecules
+        WHERE dataset_id = :dataset_id
         """
     )
     with engine.connect() as conn:
-        row = conn.execute(sql).mappings().one()
-    return dict(row)
+        dataset_id = resolve_dataset_id(conn, dataset)
+        row = conn.execute(sql, {"dataset_id": dataset_id}).mappings().one()
+    result = dict(row)
+    if not result["count"]:
+        raise HTTPException(status_code=404, detail=f"Dataset has no molecules: {dataset}")
+    return result
 
 
 @app.get("/tiles/{z}/{x}/{y}.mvt")
@@ -51,6 +109,7 @@ def tile(
     z: int,
     x: int,
     y: int,
+    dataset: str = Query(..., min_length=1),
     rank_max: int = Query(10_000, ge=1, le=10_000_000),
 ) -> Response:
     """Return every molecule with ``1 <= rank <= rank_max`` inside a WebMercator tile."""
@@ -66,7 +125,8 @@ def tile(
           spatial AS MATERIALIZED (
             SELECT m.id, m.rank, m.geom
             FROM molecules m, bounds4326 b
-            WHERE m.geom && b.b4326
+            WHERE m.dataset_id = :dataset_id
+              AND m.geom && b.b4326
               AND m.rank <= :rank_max
           ),
           mvtgeom AS (
@@ -87,9 +147,10 @@ def tile(
         """
     )
     with engine.connect() as conn:
+        dataset_id = resolve_dataset_id(conn, dataset)
         tile_bytes = conn.execute(
             sql,
-            {"z": z, "x": x, "y": y, "rank_max": rank_max},
+            {"z": z, "x": x, "y": y, "rank_max": rank_max, "dataset_id": dataset_id},
         ).scalar_one()
     return Response(
         content=bytes(tile_bytes),
@@ -104,6 +165,7 @@ def points(
     minLat: float,
     maxLng: float,
     maxLat: float,
+    dataset: str = Query(..., min_length=1),
     limit: int = Query(1000, ge=1, le=200_000),
 ) -> Response:
     """Return the top-``limit`` molecules by rank inside the viewport bbox."""
@@ -115,16 +177,19 @@ def points(
           ST_X(geom) AS lng,
           ST_Y(geom) AS lat
         FROM molecules
-        WHERE geom && ST_MakeEnvelope(:minLng, :minLat, :maxLng, :maxLat, 4326)
+        WHERE dataset_id = :dataset_id
+          AND geom && ST_MakeEnvelope(:minLng, :minLat, :maxLng, :maxLat, 4326)
         ORDER BY rank ASC, id ASC
         LIMIT :limit;
         """
     )
     out = Points()
     with engine.connect() as conn:
+        dataset_id = resolve_dataset_id(conn, dataset)
         for row in conn.execute(
             sql,
             {
+                "dataset_id": dataset_id,
                 "minLng": minLng,
                 "minLat": minLat,
                 "maxLng": maxLng,
@@ -143,4 +208,3 @@ def points(
         media_type="application/x-protobuf",
         headers={"Cache-Control": "no-store"},
     )
-

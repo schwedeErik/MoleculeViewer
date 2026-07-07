@@ -3,6 +3,7 @@ import { effectiveRankMax } from './rankLod';
 
 type MoleculeMVTLayerProps = {
   moleculeApiBase: string;
+  datasetSlug: string;
   rankCap: number;
   datasetRankMax: number;
   zoomLodAggressiveness: number;
@@ -19,6 +20,7 @@ export class MoleculeMVTLayer extends MVTLayer {
   static defaultProps = {
     ...MVTLayer.defaultProps,
     moleculeApiBase: '',
+    datasetSlug: '',
     rankCap: 1,
     datasetRankMax: 1,
     zoomLodAggressiveness: 50
@@ -27,7 +29,7 @@ export class MoleculeMVTLayer extends MVTLayer {
   getTileData(loadProps: { index: { z: number; x: number; y: number }; signal?: AbortSignal }) {
     const { index, signal } = loadProps;
     const { z, x, y } = index;
-    const { moleculeApiBase, rankCap, datasetRankMax, zoomLodAggressiveness, fetch } =
+    const { moleculeApiBase, datasetSlug, rankCap, datasetRankMax, zoomLodAggressiveness, fetch } =
       this.props as typeof this.props & MoleculeMVTLayerProps;
     const rank_max = effectiveRankMax(
       z,
@@ -35,7 +37,9 @@ export class MoleculeMVTLayer extends MVTLayer {
       rankCap,
       zoomLodAggressiveness
     );
-    const url = `${moleculeApiBase}/tiles/${z}/${x}/${y}.mvt?rank_max=${rank_max}`;
+    const url =
+      `${moleculeApiBase}/tiles/${z}/${x}/${y}.mvt` +
+      `?dataset=${encodeURIComponent(datasetSlug)}&rank_max=${rank_max}`;
 
     const { binary } = this.state;
     let loadOptions = this.getLoadOptions();

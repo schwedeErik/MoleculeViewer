@@ -36,6 +36,8 @@ def main() -> None:
     ap.add_argument("--min-dist", type=float, default=0.1)
     ap.add_argument("--out-dir", default="./out", help="Directory for the CSV + loader SQL")
     ap.add_argument("--name", default="molecules", help="Base filename (without extension)")
+    ap.add_argument("--dataset-slug", default=None, help="Dataset slug in Postgres (default: --name)")
+    ap.add_argument("--dataset-name", default=None, help="Human-readable dataset name")
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -52,6 +54,8 @@ def main() -> None:
         EmbeddingMethod(args.method),
         csv_path=str(csv_path),
         sql_path=str(sql_path),
+        dataset_slug=args.dataset_slug or args.name,
+        dataset_name=args.dataset_name or args.dataset_slug or args.name,
         umap_kwargs={
             "metric": args.metric,
             "n_neighbors": args.n_neighbors,

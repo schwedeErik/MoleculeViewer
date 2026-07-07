@@ -221,6 +221,8 @@ def process_and_export(
     *,
     csv_path: str,
     sql_path: str | None = None,
+    dataset_slug: str = "default",
+    dataset_name: str | None = None,
     umap_kwargs: dict | None = None,
     rank_kwargs: dict | None = None,
 ) -> int:
@@ -248,4 +250,8 @@ def process_and_export(
         ranks=ranks,
         csv_path=csv_path,
         sql_path=sql_path,
+        dataset_slug=dataset_slug,
+        dataset_name=dataset_name,
+        embedding_method=method.value,
+        embedding_dim=EMBEDDING_DIMS[method],
     )
