@@ -1,12 +1,15 @@
 import DeckGL from '@deck.gl/react';
 import { MapView, WebMercatorViewport } from '@deck.gl/core';
-import { ScatterplotLayer } from '@deck.gl/layers';
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { PathLayer, TextLayer } from '@deck.gl/layers';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useAppStore } from './store';
-import { decodePointsPb, type DecodedPoint } from './proto';
-
-const PREFETCH_PAD_FACTOR = 0.5;
-const PREFETCH_LIMIT_FACTOR = 3;
+import {
+  effectiveRankMax,
+  lodParamsForAggressiveness,
+  rankMaxForZoom
+} from './rankLod';
+import { MoleculeMVTLayer } from './MoleculeMVTLayer';
+import { visibleTileOutlines } from './tileGrid';
 
 /** Radius in map coordinate units (degrees here); scales with zoom automatically. */
 function pointRadiusFromBounds(bounds: {
@@ -23,66 +26,6 @@ function pointRadiusFromBounds(bounds: {
   return spanDeg * 0.0015;
 }
 
-type LngLatBbox = {
-  minLng: number;
-  maxLng: number;
-  minLat: number;
-  maxLat: number;
-};
-
-function visibleBbox(vp: WebMercatorViewport, width: number, height: number): LngLatBbox {
-  const nw = vp.unproject([0, 0]);
-  const se = vp.unproject([width, height]);
-  return {
-    minLng: Math.min(nw[0], se[0]),
-    maxLng: Math.max(nw[0], se[0]),
-    minLat: Math.min(nw[1], se[1]),
-    maxLat: Math.max(nw[1], se[1])
-  };
-}
-
-/** Padded bbox for prefetching points beyond the visible viewport. */
-function paddedFetchBbox(
-  vp: WebMercatorViewport,
-  width: number,
-  height: number,
-  padFactor = PREFETCH_PAD_FACTOR
-): LngLatBbox {
-  const padX = width * padFactor;
-  const padY = height * padFactor;
-  const nw = vp.unproject([-padX, -padY]);
-  const se = vp.unproject([width + padX, height + padY]);
-  return {
-    minLng: Math.min(nw[0], se[0]),
-    maxLng: Math.max(nw[0], se[0]),
-    minLat: Math.min(nw[1], se[1]),
-    maxLat: Math.max(nw[1], se[1])
-  };
-}
-
-function inBbox(p: DecodedPoint, bbox: LngLatBbox): boolean {
-  return (
-    p.lng >= bbox.minLng &&
-    p.lng <= bbox.maxLng &&
-    p.lat >= bbox.minLat &&
-    p.lat <= bbox.maxLat
-  );
-}
-
-/** Top-N by rank among points inside the visible viewport. */
-function topInViewport(
-  points: Iterable<DecodedPoint>,
-  bbox: LngLatBbox,
-  limit: number
-): DecodedPoint[] {
-  const inView: DecodedPoint[] = [];
-  for (const p of points) {
-    if (inBbox(p, bbox)) inView.push(p);
-  }
-  inView.sort((a, b) => (a.rank !== b.rank ? a.rank - b.rank : a.id.localeCompare(b.id)));
-  return inView.slice(0, limit);
-}
-
 /** Rank 1 → red; highest rank in the dataset → blue. */
 function rankColor(rank: number, datasetRankMax: number): [number, number, number, number] {
   const t =
@@ -96,15 +39,30 @@ export type ScatterplotViewProps = {
 
 export function ScatterplotView({ onBack }: ScatterplotViewProps) {
   const apiBase = useAppStore((s) => s.apiBase);
-  const viewLimit = useAppStore((s) => s.viewLimit);
+  const rankCap = useAppStore((s) => s.rankCap);
+  const zoomLodAggressiveness = useAppStore((s) => s.zoomLodAggressiveness);
   const viewState = useAppStore((s) => s.viewState);
   const setViewState = useAppStore((s) => s.setViewState);
-  const setViewLimit = useAppStore((s) => s.setViewLimit);
+  const setRankCap = useAppStore((s) => s.setRankCap);
+  const setZoomLodAggressiveness = useAppStore((s) => s.setZoomLodAggressiveness);
 
-  const [viewPoints, setViewPoints] = useState<DecodedPoint[]>([]);
   const [datasetRankMax, setDatasetRankMax] = useState(1);
   const [pointRadius, setPointRadius] = useState(0.01);
-  const pointsCacheRef = useRef<Map<string, DecodedPoint>>(new Map());
+  const [showTileGrid, setShowTileGrid] = useState(true);
+
+  const tileZ = Math.floor(viewState.zoom);
+  const activeRankMax = effectiveRankMax(
+    viewState.zoom,
+    datasetRankMax,
+    rankCap,
+    zoomLodAggressiveness
+  );
+  const zoomRankMax = rankMaxForZoom(
+    viewState.zoom,
+    datasetRankMax,
+    zoomLodAggressiveness
+  );
+  const lodParams = lodParamsForAggressiveness(zoomLodAggressiveness);
 
   useEffect(() => {
     const ac = new AbortController();
@@ -115,7 +73,9 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
         const b = await res.json();
         if (!b.count) return;
 
-        setDatasetRankMax(b.max_rank ?? b.count ?? 1);
+        const maxRank = b.max_rank ?? b.count ?? 1;
+        setDatasetRankMax(maxRank);
+        setRankCap(Math.min(useAppStore.getState().rankCap, maxRank));
         setPointRadius(
           pointRadiusFromBounds({
             min_lng: b.min_lng,
@@ -147,90 +107,100 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
       }
     })();
     return () => ac.abort();
-  }, [apiBase, setViewState]);
+  }, [apiBase, setViewState, setRankCap]);
 
-  useEffect(() => {
-    pointsCacheRef.current.clear();
-    setViewPoints([]);
-  }, [apiBase, viewLimit]);
+  const rankSliderMax = Math.max(1_000, datasetRankMax);
+  const rankSliderMin = rankSliderMax <= 1_000 ? 1 : 1_000;
+  const rankSliderStep = rankSliderMax <= 1_000 ? 1 : 1_000;
+  const rankSliderValue = Math.min(rankCap, rankSliderMax);
 
-  useEffect(() => {
-    const ac = new AbortController();
-    const t = window.setTimeout(async () => {
-      try {
-        const width = window.innerWidth;
-        const height = window.innerHeight;
-        const vp = new WebMercatorViewport({
-          width,
-          height,
-          longitude: viewState.longitude,
-          latitude: viewState.latitude,
-          zoom: viewState.zoom,
-          pitch: viewState.pitch,
-          bearing: viewState.bearing
-        });
+  const tileOutlines = useMemo(() => {
+    if (!showTileGrid) return [];
+    const width = window.innerWidth;
+    const height = Math.max(window.innerHeight - 48, 1);
+    const vp = new WebMercatorViewport({
+      width,
+      height,
+      longitude: viewState.longitude,
+      latitude: viewState.latitude,
+      zoom: viewState.zoom,
+      pitch: viewState.pitch,
+      bearing: viewState.bearing
+    });
+    return visibleTileOutlines(vp.getBounds(), tileZ);
+  }, [showTileGrid, viewState, tileZ]);
 
-        const visible = visibleBbox(vp, width, height);
-        const fetchBox = paddedFetchBbox(vp, width, height);
-        const fetchLimit = Math.min(200_000, viewLimit * PREFETCH_LIMIT_FACTOR);
+  const tileParamsKey = `${rankSliderValue}:${zoomLodAggressiveness}`;
 
-        const qs = new URLSearchParams({
-          minLng: String(fetchBox.minLng),
-          minLat: String(fetchBox.minLat),
-          maxLng: String(fetchBox.maxLng),
-          maxLat: String(fetchBox.maxLat),
-          limit: String(fetchLimit)
-        });
+  const moleculeLayer = useMemo(() => {
+    // Dummy query param busts cache when sliders change; rank_max is set per tile in getTileData.
+    const tileData = `${apiBase}/tiles/{z}/{x}/{y}.mvt?_k=${tileParamsKey}`;
 
-        const res = await fetch(`${apiBase}/points.pb?${qs.toString()}`, {
-          signal: ac.signal
-        });
-        if (!res.ok) throw new Error(`points.pb ${res.status}`);
-        const buf = await res.arrayBuffer();
-        const fetched = decodePointsPb(buf);
-
-        const cache = pointsCacheRef.current;
-        for (const p of fetched) cache.set(p.id, p);
-
-        for (const id of [...cache.keys()]) {
-          const p = cache.get(id)!;
-          if (!inBbox(p, fetchBox)) cache.delete(id);
-        }
-
-        setViewPoints(topInViewport(cache.values(), visible, viewLimit));
-      } catch (e) {
-        if ((e as Error).name === 'AbortError') return;
-        setViewPoints([]);
+    return new MoleculeMVTLayer({
+      id: 'molecules-mvt',
+      data: tileData,
+      moleculeApiBase: apiBase,
+      rankCap: rankSliderValue,
+      datasetRankMax,
+      zoomLodAggressiveness,
+      binary: false,
+      minZoom: 0,
+      maxZoom: 23,
+      refinementStrategy: 'best-available',
+      maxRequests: 12,
+      maxCacheSize: 128,
+      pickable: false,
+      stroked: false,
+      filled: true,
+      pointType: 'circle',
+      getPointRadius: pointRadius,
+      pointRadiusUnits: 'common',
+      pointRadiusMinPixels: 0.35,
+      pointRadiusMaxPixels: 1.5,
+      getFillColor: (f: { properties?: { rank?: number } }) => {
+        const rank = Number(f.properties?.rank ?? 1);
+        return rankColor(rank, datasetRankMax);
+      },
+      updateTriggers: {
+        getFillColor: datasetRankMax,
+        getPointRadius: pointRadius
       }
-    }, 150);
-
-    return () => {
-      ac.abort();
-      window.clearTimeout(t);
-    };
-  }, [apiBase, viewLimit, viewState]);
+    } as ConstructorParameters<typeof MoleculeMVTLayer>[0]);
+  }, [apiBase, tileParamsKey, rankSliderValue, datasetRankMax, zoomLodAggressiveness, pointRadius]);
 
   const layers = useMemo(() => {
-    return [
-      new ScatterplotLayer({
-        id: `molecules-view-${viewLimit}`,
-        data: viewPoints,
-        getPosition: (d) => [d.lng, d.lat],
-        getRadius: pointRadius,
-        radiusUnits: 'common',
-        radiusMinPixels: 0.35,
-        radiusMaxPixels: 1.5,
-        getFillColor: (d) => rankColor(d.rank, datasetRankMax),
-        opacity: 1,
-        pickable: false,
-        updateTriggers: {
-          data: viewPoints,
-          getFillColor: datasetRankMax,
-          getRadius: pointRadius
-        }
-      })
-    ];
-  }, [viewLimit, viewPoints, datasetRankMax, pointRadius]);
+    if (!showTileGrid) return [moleculeLayer];
+
+    const outlineLayer = new PathLayer({
+      id: 'tile-outlines',
+      data: tileOutlines,
+      getPath: (d) => d.path,
+      getColor: [0, 0, 0, 220],
+      getWidth: 2,
+      widthUnits: 'pixels',
+      pickable: false
+    });
+
+    const labelLayer = new TextLayer({
+      id: 'tile-labels',
+      data: tileOutlines,
+      getPosition: (d) => {
+        const lngs = d.path.map((p: [number, number]) => p[0]);
+        const lats = d.path.map((p: [number, number]) => p[1]);
+        return [
+          (Math.min(...lngs) + Math.max(...lngs)) / 2,
+          (Math.min(...lats) + Math.max(...lats)) / 2
+        ];
+      },
+      getText: (d) => d.label,
+      getSize: 12,
+      getColor: [0, 0, 0, 200],
+      fontFamily: 'monospace',
+      pickable: false
+    });
+
+    return [moleculeLayer, outlineLayer, labelLayer];
+  }, [moleculeLayer, showTileGrid, tileOutlines]);
 
   const btnStyle: CSSProperties = {
     padding: '6px 12px',
@@ -260,15 +230,15 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
           ← Dataset & embedding
         </button>
         <div style={{ fontWeight: 600 }}>Molecule Map</div>
-        <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span>top in view</span>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+          <span>rank max</span>
           <input
             type="range"
-            min={100}
-            max={100_000}
-            step={100}
-            value={viewLimit}
-            onChange={(e) => setViewLimit(Number(e.target.value))}
+            min={rankSliderMin}
+            max={rankSliderMax}
+            step={rankSliderStep}
+            value={rankSliderValue}
+            onChange={(e) => setRankCap(Number(e.target.value))}
             onPointerDown={(e) => e.stopPropagation()}
             onPointerMove={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
@@ -276,10 +246,40 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
             onTouchStart={(e) => e.stopPropagation()}
             onTouchMove={(e) => e.stopPropagation()}
           />
-          <span style={{ width: 64, textAlign: 'right' }}>{viewLimit.toLocaleString()}</span>
+          <span style={{ width: 64, textAlign: 'right' }}>
+            {rankSliderValue.toLocaleString()}
+          </span>
+        </label>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+          <span>zoom LOD</span>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={zoomLodAggressiveness}
+            onChange={(e) => setZoomLodAggressiveness(Number(e.target.value))}
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerMove={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onMouseMove={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
+            onTouchMove={(e) => e.stopPropagation()}
+          />
+          <span style={{ width: 28, textAlign: 'right' }}>{zoomLodAggressiveness}</span>
+        </label>
+        <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+          <input
+            type="checkbox"
+            checked={showTileGrid}
+            onChange={(e) => setShowTileGrid(e.target.checked)}
+          />
+          tile grid
         </label>
         <div style={{ marginLeft: 'auto', color: '#666', fontSize: 12 }}>
-          Showing top {viewPoints.length.toLocaleString()} of {viewLimit.toLocaleString()} · {apiBase}
+          rank ≤ {activeRankMax.toLocaleString()} (cap {rankSliderValue.toLocaleString()}) · zoom
+          budget {zoomRankMax.toLocaleString()} ({lodParams.base.toLocaleString()}×
+          {lodParams.growth}^z) · z={tileZ}
         </div>
       </div>
 
@@ -289,7 +289,7 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
           controller={true}
           initialViewState={viewState}
           viewState={viewState}
-          onViewStateChange={(e) => setViewState(e.viewState as any)}
+          onViewStateChange={(e) => setViewState(e.viewState as typeof viewState)}
           layers={layers}
         />
       </div>

@@ -51,9 +51,9 @@ def tile(
     z: int,
     x: int,
     y: int,
-    rank_max: int = Query(1000, ge=1000, le=1_000_000),
-    limit: int = Query(50000, ge=1, le=200000),
+    rank_max: int = Query(10_000, ge=1, le=10_000_000),
 ) -> Response:
+    """Return every molecule with ``1 <= rank <= rank_max`` inside a WebMercator tile."""
     sql = text(
         """
         WITH
@@ -63,22 +63,24 @@ def tile(
           bounds4326 AS (
             SELECT ST_Transform(b3857, 4326) AS b4326, b3857 FROM bounds
           ),
+          spatial AS MATERIALIZED (
+            SELECT m.id, m.rank, m.geom
+            FROM molecules m, bounds4326 b
+            WHERE m.geom && b.b4326
+              AND m.rank <= :rank_max
+          ),
           mvtgeom AS (
             SELECT
-              m.id,
-              m.rank,
+              s.id,
+              s.rank,
               ST_AsMVTGeom(
-                ST_Transform(m.geom, 3857),
+                ST_Transform(s.geom, 3857),
                 b.b3857,
                 4096,
                 256,
                 true
               ) AS geom
-            FROM molecules m, bounds4326 b
-            WHERE m.rank <= :rank_max
-              AND m.geom && b.b4326
-            ORDER BY m.rank ASC, m.id ASC
-            LIMIT :limit
+            FROM spatial s, bounds4326 b
           )
         SELECT COALESCE(ST_AsMVT(mvtgeom, 'molecules', 4096, 'geom'), ''::bytea) AS tile
         FROM mvtgeom;
@@ -86,7 +88,8 @@ def tile(
     )
     with engine.connect() as conn:
         tile_bytes = conn.execute(
-            sql, {"z": z, "x": x, "y": y, "rank_max": rank_max, "limit": limit}
+            sql,
+            {"z": z, "x": x, "y": y, "rank_max": rank_max},
         ).scalar_one()
     return Response(
         content=bytes(tile_bytes),
