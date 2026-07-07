@@ -5,11 +5,89 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useAppStore } from './store';
 import { decodePointsPb, type DecodedPoint } from './proto';
 
-function rankColor(rank: number): [number, number, number, number] {
-  if (rank <= 1) return [0, 200, 255, 220];
-  if (rank === 2) return [0, 255, 120, 210];
-  if (rank === 3) return [255, 200, 0, 200];
-  return [255, 255, 255, 160];
+const PREFETCH_PAD_FACTOR = 0.5;
+const PREFETCH_LIMIT_FACTOR = 3;
+
+/** Radius in map coordinate units (degrees here); scales with zoom automatically. */
+function pointRadiusFromBounds(bounds: {
+  min_lng: number;
+  max_lng: number;
+  min_lat: number;
+  max_lat: number;
+}): number {
+  const spanDeg = Math.max(
+    bounds.max_lng - bounds.min_lng,
+    bounds.max_lat - bounds.min_lat,
+    1e-6
+  );
+  return spanDeg * 0.0015;
+}
+
+type LngLatBbox = {
+  minLng: number;
+  maxLng: number;
+  minLat: number;
+  maxLat: number;
+};
+
+function visibleBbox(vp: WebMercatorViewport, width: number, height: number): LngLatBbox {
+  const nw = vp.unproject([0, 0]);
+  const se = vp.unproject([width, height]);
+  return {
+    minLng: Math.min(nw[0], se[0]),
+    maxLng: Math.max(nw[0], se[0]),
+    minLat: Math.min(nw[1], se[1]),
+    maxLat: Math.max(nw[1], se[1])
+  };
+}
+
+/** Padded bbox for prefetching points beyond the visible viewport. */
+function paddedFetchBbox(
+  vp: WebMercatorViewport,
+  width: number,
+  height: number,
+  padFactor = PREFETCH_PAD_FACTOR
+): LngLatBbox {
+  const padX = width * padFactor;
+  const padY = height * padFactor;
+  const nw = vp.unproject([-padX, -padY]);
+  const se = vp.unproject([width + padX, height + padY]);
+  return {
+    minLng: Math.min(nw[0], se[0]),
+    maxLng: Math.max(nw[0], se[0]),
+    minLat: Math.min(nw[1], se[1]),
+    maxLat: Math.max(nw[1], se[1])
+  };
+}
+
+function inBbox(p: DecodedPoint, bbox: LngLatBbox): boolean {
+  return (
+    p.lng >= bbox.minLng &&
+    p.lng <= bbox.maxLng &&
+    p.lat >= bbox.minLat &&
+    p.lat <= bbox.maxLat
+  );
+}
+
+/** Top-N by rank among points inside the visible viewport. */
+function topInViewport(
+  points: Iterable<DecodedPoint>,
+  bbox: LngLatBbox,
+  limit: number
+): DecodedPoint[] {
+  const inView: DecodedPoint[] = [];
+  for (const p of points) {
+    if (inBbox(p, bbox)) inView.push(p);
+  }
+  inView.sort((a, b) => (a.rank !== b.rank ? a.rank - b.rank : a.id.localeCompare(b.id)));
+  return inView.slice(0, limit);
+}
+
+/** Rank 1 → red; highest rank in the dataset → blue. */
+function rankColor(rank: number, datasetRankMax: number): [number, number, number, number] {
+  const t =
+    datasetRankMax <= 1 ? 0 : Math.min(1, Math.max(0, (rank - 1) / (datasetRankMax - 1)));
+  return [Math.round(255 * (1 - t)), 0, Math.round(255 * t), 210];
 }
 
 export type ScatterplotViewProps = {
@@ -18,27 +96,68 @@ export type ScatterplotViewProps = {
 
 export function ScatterplotView({ onBack }: ScatterplotViewProps) {
   const apiBase = useAppStore((s) => s.apiBase);
-  const rankMax = useAppStore((s) => s.rankMax);
   const viewLimit = useAppStore((s) => s.viewLimit);
   const viewState = useAppStore((s) => s.viewState);
   const setViewState = useAppStore((s) => s.setViewState);
-  const setRankMax = useAppStore((s) => s.setRankMax);
   const setViewLimit = useAppStore((s) => s.setViewLimit);
 
-  const cacheRef = useRef<Map<string, DecodedPoint>>(new Map());
-  const stickyIdsRef = useRef<Set<string>>(new Set());
-  const prevZoomRef = useRef<number>(viewState.zoom);
   const [viewPoints, setViewPoints] = useState<DecodedPoint[]>([]);
+  const [datasetRankMax, setDatasetRankMax] = useState(1);
+  const [pointRadius, setPointRadius] = useState(0.01);
+  const pointsCacheRef = useRef<Map<string, DecodedPoint>>(new Map());
+
+  useEffect(() => {
+    const ac = new AbortController();
+    (async () => {
+      try {
+        const res = await fetch(`${apiBase}/bounds`, { signal: ac.signal });
+        if (!res.ok) return;
+        const b = await res.json();
+        if (!b.count) return;
+
+        setDatasetRankMax(b.max_rank ?? b.count ?? 1);
+        setPointRadius(
+          pointRadiusFromBounds({
+            min_lng: b.min_lng,
+            max_lng: b.max_lng,
+            min_lat: b.min_lat,
+            max_lat: b.max_lat
+          })
+        );
+
+        const width = window.innerWidth;
+        const height = Math.max(window.innerHeight - 48, 1);
+        const vp = new WebMercatorViewport({ width, height });
+        const fitted = vp.fitBounds(
+          [
+            [b.min_lng, b.min_lat],
+            [b.max_lng, b.max_lat]
+          ],
+          { padding: 48 }
+        );
+        setViewState({
+          longitude: fitted.longitude,
+          latitude: fitted.latitude,
+          zoom: fitted.zoom,
+          pitch: 0,
+          bearing: 0
+        });
+      } catch (e) {
+        if ((e as Error).name === 'AbortError') return;
+      }
+    })();
+    return () => ac.abort();
+  }, [apiBase, setViewState]);
+
+  useEffect(() => {
+    pointsCacheRef.current.clear();
+    setViewPoints([]);
+  }, [apiBase, viewLimit]);
 
   useEffect(() => {
     const ac = new AbortController();
     const t = window.setTimeout(async () => {
       try {
-        if (viewState.zoom < prevZoomRef.current - 0.001) {
-          stickyIdsRef.current.clear();
-        }
-        prevZoomRef.current = viewState.zoom;
-
         const width = window.innerWidth;
         const height = window.innerHeight;
         const vp = new WebMercatorViewport({
@@ -51,21 +170,16 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
           bearing: viewState.bearing
         });
 
-        const pad = 200;
-        const nw = vp.unproject([-pad, -pad]);
-        const se = vp.unproject([width + pad, height + pad]);
-        const minLng = Math.min(nw[0], se[0]);
-        const maxLng = Math.max(nw[0], se[0]);
-        const minLat = Math.min(nw[1], se[1]);
-        const maxLat = Math.max(nw[1], se[1]);
+        const visible = visibleBbox(vp, width, height);
+        const fetchBox = paddedFetchBbox(vp, width, height);
+        const fetchLimit = Math.min(200_000, viewLimit * PREFETCH_LIMIT_FACTOR);
 
         const qs = new URLSearchParams({
-          minLng: String(minLng),
-          minLat: String(minLat),
-          maxLng: String(maxLng),
-          maxLat: String(maxLat),
-          limit: String(viewLimit),
-          rank_max: String(rankMax)
+          minLng: String(fetchBox.minLng),
+          minLat: String(fetchBox.minLat),
+          maxLng: String(fetchBox.maxLng),
+          maxLat: String(fetchBox.maxLat),
+          limit: String(fetchLimit)
         });
 
         const res = await fetch(`${apiBase}/points.pb?${qs.toString()}`, {
@@ -74,37 +188,18 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
         if (!res.ok) throw new Error(`points.pb ${res.status}`);
         const buf = await res.arrayBuffer();
         const fetched = decodePointsPb(buf);
-        for (const p of fetched) cacheRef.current.set(p.id, p);
 
-        const vnw = vp.unproject([0, 0]);
-        const vse = vp.unproject([width, height]);
-        const vMinLng = Math.min(vnw[0], vse[0]);
-        const vMaxLng = Math.max(vnw[0], vse[0]);
-        const vMinLat = Math.min(vnw[1], vse[1]);
-        const vMaxLat = Math.max(vnw[1], vse[1]);
+        const cache = pointsCacheRef.current;
+        for (const p of fetched) cache.set(p.id, p);
 
-        const inView: DecodedPoint[] = [];
-        for (const p of cacheRef.current.values()) {
-          if (p.lng < vMinLng || p.lng > vMaxLng || p.lat < vMinLat || p.lat > vMaxLat) continue;
-          if (p.rank > rankMax) continue;
-          inView.push(p);
+        for (const id of [...cache.keys()]) {
+          const p = cache.get(id)!;
+          if (!inBbox(p, fetchBox)) cache.delete(id);
         }
 
-        const byRankStickyThenId = (a: DecodedPoint, b: DecodedPoint) => {
-          if (a.rank !== b.rank) return a.rank - b.rank;
-          const aSticky = stickyIdsRef.current.has(a.id);
-          const bSticky = stickyIdsRef.current.has(b.id);
-          if (aSticky !== bSticky) return aSticky ? -1 : 1;
-          return a.id.localeCompare(b.id);
-        };
-
-        inView.sort(byRankStickyThenId);
-        const selected = inView.slice(0, viewLimit);
-
-        stickyIdsRef.current = new Set(selected.map((p) => p.id));
-        setViewPoints(selected);
+        setViewPoints(topInViewport(cache.values(), visible, viewLimit));
       } catch (e) {
-        if ((e as any)?.name === 'AbortError') return;
+        if ((e as Error).name === 'AbortError') return;
         setViewPoints([]);
       }
     }, 150);
@@ -113,33 +208,29 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
       ac.abort();
       window.clearTimeout(t);
     };
-  }, [apiBase, rankMax, viewLimit, viewState]);
-
-  useEffect(() => {
-    cacheRef.current.clear();
-    stickyIdsRef.current.clear();
-    setViewPoints([]);
-  }, [apiBase, rankMax, viewLimit]);
+  }, [apiBase, viewLimit, viewState]);
 
   const layers = useMemo(() => {
     return [
       new ScatterplotLayer({
-        id: `molecules-view-${rankMax}-${viewLimit}`,
+        id: `molecules-view-${viewLimit}`,
         data: viewPoints,
         getPosition: (d) => [d.lng, d.lat],
-        getRadius: 2,
-        radiusUnits: 'pixels',
-        radiusMinPixels: 1,
-        radiusMaxPixels: 4,
-        getFillColor: (d) => rankColor(d.rank),
+        getRadius: pointRadius,
+        radiusUnits: 'common',
+        radiusMinPixels: 0.35,
+        radiusMaxPixels: 1.5,
+        getFillColor: (d) => rankColor(d.rank, datasetRankMax),
         opacity: 1,
         pickable: false,
         updateTriggers: {
-          data: viewPoints
+          data: viewPoints,
+          getFillColor: datasetRankMax,
+          getRadius: pointRadius
         }
       })
     ];
-  }, [rankMax, viewLimit, viewPoints]);
+  }, [viewLimit, viewPoints, datasetRankMax, pointRadius]);
 
   const btnStyle: CSSProperties = {
     padding: '6px 12px',
@@ -170,29 +261,12 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
         </button>
         <div style={{ fontWeight: 600 }}>Molecule Map</div>
         <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span>rank ≤</span>
+          <span>top in view</span>
           <input
             type="range"
-            min={1}
-            max={3}
-            value={rankMax}
-            onChange={(e) => setRankMax(Number(e.target.value))}
-            onPointerDown={(e) => e.stopPropagation()}
-            onPointerMove={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-            onMouseMove={(e) => e.stopPropagation()}
-            onTouchStart={(e) => e.stopPropagation()}
-            onTouchMove={(e) => e.stopPropagation()}
-          />
-          <span style={{ width: 18, textAlign: 'right' }}>{rankMax}</span>
-        </label>
-        <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span>max/view</span>
-          <input
-            type="range"
-            min={1000}
-            max={200000}
-            step={1000}
+            min={100}
+            max={100_000}
+            step={100}
             value={viewLimit}
             onChange={(e) => setViewLimit(Number(e.target.value))}
             onPointerDown={(e) => e.stopPropagation()}
@@ -202,12 +276,10 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
             onTouchStart={(e) => e.stopPropagation()}
             onTouchMove={(e) => e.stopPropagation()}
           />
-          <span style={{ width: 64, textAlign: 'right' }}>
-            {viewLimit.toLocaleString()}
-          </span>
+          <span style={{ width: 64, textAlign: 'right' }}>{viewLimit.toLocaleString()}</span>
         </label>
         <div style={{ marginLeft: 'auto', color: '#666', fontSize: 12 }}>
-          Rendering points from {apiBase}
+          Showing top {viewPoints.length.toLocaleString()} of {viewLimit.toLocaleString()} · {apiBase}
         </div>
       </div>
 

@@ -26,12 +26,32 @@ def health() -> dict:
     return {"ok": True}
 
 
+@app.get("/bounds")
+def bounds() -> dict:
+    sql = text(
+        """
+        SELECT
+          MIN(ST_X(geom)) AS min_lng,
+          MAX(ST_X(geom)) AS max_lng,
+          MIN(ST_Y(geom)) AS min_lat,
+          MAX(ST_Y(geom)) AS max_lat,
+          MIN(rank) AS min_rank,
+          MAX(rank) AS max_rank,
+          COUNT(*)::int AS count
+        FROM molecules
+        """
+    )
+    with engine.connect() as conn:
+        row = conn.execute(sql).mappings().one()
+    return dict(row)
+
+
 @app.get("/tiles/{z}/{x}/{y}.mvt")
 def tile(
     z: int,
     x: int,
     y: int,
-    rank_max: int = Query(3, ge=1, le=20),
+    rank_max: int = Query(1000, ge=1000, le=1_000_000),
     limit: int = Query(50000, ge=1, le=200000),
 ) -> Response:
     sql = text(
@@ -81,9 +101,9 @@ def points(
     minLat: float,
     maxLng: float,
     maxLat: float,
-    limit: int = Query(50000, ge=1, le=200000),
-    rank_max: int = Query(3, ge=1, le=20),
+    limit: int = Query(1000, ge=1, le=200_000),
 ) -> Response:
+    """Return the top-``limit`` molecules by rank inside the viewport bbox."""
     sql = text(
         """
         SELECT
@@ -92,8 +112,7 @@ def points(
           ST_X(geom) AS lng,
           ST_Y(geom) AS lat
         FROM molecules
-        WHERE rank <= :rank_max
-          AND geom && ST_MakeEnvelope(:minLng, :minLat, :maxLng, :maxLat, 4326)
+        WHERE geom && ST_MakeEnvelope(:minLng, :minLat, :maxLng, :maxLat, 4326)
         ORDER BY rank ASC, id ASC
         LIMIT :limit;
         """
@@ -108,7 +127,6 @@ def points(
                 "maxLng": maxLng,
                 "maxLat": maxLat,
                 "limit": limit,
-                "rank_max": rank_max,
             },
         ):
             p = out.points.add()

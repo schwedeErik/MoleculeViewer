@@ -1,0 +1,32 @@
+# Conda environment for the molecule-map build pipeline (Slurm / HPC).
+#
+# Create:
+#   conda env create -f environment.yml
+#
+# Or use the helper script (recommended — lets you pick CUDA version):
+#   bash scripts/setup_conda_env.sh
+#
+# Activate before running or submitting jobs:
+#   conda activate molmap-build
+#
+# CUDA: default is 12.0. If your cluster uses CUDA 11.8, run setup_conda_env.sh
+# with CUDA_VERSION=11.8 instead of editing this file by hand.
+
+name: molmap-build
+channels:
+  - rapidsai
+  - conda-forge
+  - nvidia
+dependencies:
+  - python=3.11
+  - cuda-version=12.0
+  - cuml=24.10
+  - umap-learn>=0.5.5
+  - scikit-learn>=1.5
+  - rdkit
+  - numpy
+  - tqdm
+  - pip
+  - pip:
+      - datasets>=3.0
+      - huggingface_hub>=0.23

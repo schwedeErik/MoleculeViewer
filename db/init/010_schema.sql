@@ -1,9 +1,13 @@
+-- NOTE: the `embedding` dimension must match the embedding method used by the
+-- pipeline: MACCS = 167 (default), Morgan = 2048, ChemBERTa = 768. Change the
+-- vector(...) size below if you switch methods.
 CREATE TABLE IF NOT EXISTS molecules (
   id BIGSERIAL PRIMARY KEY,
+  smiles TEXT,
   name TEXT,
-  rank SMALLINT NOT NULL DEFAULT 1,
+  rank INTEGER NOT NULL DEFAULT 1,
   geom geometry(Point, 4326) NOT NULL,
-  embedding vector(384)
+  embedding vector(167)
 );
 
 CREATE INDEX IF NOT EXISTS molecules_geom_gist ON molecules USING GIST (geom);
