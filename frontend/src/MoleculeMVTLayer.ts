@@ -1,18 +1,33 @@
 import { MVTLayer } from '@deck.gl/geo-layers';
-import { effectiveRankMax } from './rankLod';
+import { load } from '@loaders.gl/core';
+import { MVTLoader } from '@loaders.gl/mvt';
+import { PMTiles } from 'pmtiles';
+import { DEFAULT_LOD_LEVEL, rankMaxForZoom } from './rankLod';
 
 type MoleculeMVTLayerProps = {
   moleculeApiBase: string;
   datasetSlug: string;
-  rankCap: number;
   datasetRankMax: number;
-  zoomLodAggressiveness: number;
+  lodLevel: number;
+  /** When set, tiles are read from this PMTiles archive instead of live PostGIS. */
+  pmtilesUrl: string | null;
 };
+
+const pmtilesCache = new Map<string, PMTiles>();
+
+function getPmtiles(url: string): PMTiles {
+  let archive = pmtilesCache.get(url);
+  if (!archive) {
+    archive = new PMTiles(url);
+    pmtilesCache.set(url, archive);
+  }
+  return archive;
+}
 
 /**
  * MVT tiles with server-side rank filtering per tile zoom level.
- * The `data` template stays stable while panning/zooming so deck.gl keeps its cache;
- * each tile requests `rank_max` from the LOD curve at that tile's z.
+ * Uses a precomputed PMTiles archive when ``pmtilesUrl`` is set; otherwise hits
+ * the live ``/tiles`` endpoint with ``rank_max`` from the LOD curve.
  */
 export class MoleculeMVTLayer extends MVTLayer {
   static layerName = 'MoleculeMVTLayer';
@@ -21,25 +36,25 @@ export class MoleculeMVTLayer extends MVTLayer {
     ...MVTLayer.defaultProps,
     moleculeApiBase: '',
     datasetSlug: '',
-    rankCap: 1,
     datasetRankMax: 1,
-    zoomLodAggressiveness: 50
+    lodLevel: DEFAULT_LOD_LEVEL,
+    pmtilesUrl: null
   };
 
-  getTileData(loadProps: { index: { z: number; x: number; y: number }; signal?: AbortSignal }) {
+  getTileData(loadProps: {
+    index: { z: number; x: number; y: number };
+    signal?: AbortSignal;
+  }) {
     const { index, signal } = loadProps;
     const { z, x, y } = index;
-    const { moleculeApiBase, datasetSlug, rankCap, datasetRankMax, zoomLodAggressiveness, fetch } =
-      this.props as typeof this.props & MoleculeMVTLayerProps;
-    const rank_max = effectiveRankMax(
-      z,
+    const {
+      moleculeApiBase,
+      datasetSlug,
       datasetRankMax,
-      rankCap,
-      zoomLodAggressiveness
-    );
-    const url =
-      `${moleculeApiBase}/tiles/${z}/${x}/${y}.mvt` +
-      `?dataset=${encodeURIComponent(datasetSlug)}&rank_max=${rank_max}`;
+      lodLevel,
+      pmtilesUrl,
+      fetch
+    } = this.props as typeof this.props & MoleculeMVTLayerProps;
 
     const { binary } = this.state;
     let loadOptions = this.getLoadOptions();
@@ -53,6 +68,22 @@ export class MoleculeMVTLayer extends MVTLayer {
       },
       gis: binary ? { format: 'binary' } : {}
     };
+
+    if (pmtilesUrl) {
+      return getPmtiles(pmtilesUrl)
+        .getZxy(z, x, y, signal)
+        .then((entry) => {
+          if (!entry?.data || signal?.aborted) {
+            return null;
+          }
+          return load(entry.data, MVTLoader, loadOptions);
+        });
+    }
+
+    const rank_max = rankMaxForZoom(z, datasetRankMax, lodLevel);
+    const url =
+      `${moleculeApiBase}/tiles/${z}/${x}/${y}.mvt` +
+      `?dataset=${encodeURIComponent(datasetSlug)}&rank_max=${rank_max}`;
     return fetch!(url, { propName: 'data', layer: this, loadOptions, signal });
   }
 }

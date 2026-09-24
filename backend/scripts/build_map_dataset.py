@@ -38,6 +38,12 @@ def main() -> None:
     ap.add_argument("--name", default="molecules", help="Base filename (without extension)")
     ap.add_argument("--dataset-slug", default=None, help="Dataset slug in Postgres (default: --name)")
     ap.add_argument("--dataset-name", default=None, help="Human-readable dataset name")
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Parallel embedding workers (default: all CPUs)",
+    )
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -61,7 +67,9 @@ def main() -> None:
             "n_neighbors": args.n_neighbors,
             "min_dist": args.min_dist,
         },
+        n_workers=args.workers,
     )
+    del smiles
 
     print(f"Wrote {n:,} rows to {csv_path}", flush=True)
     print(f"Loader script: {sql_path}", flush=True)

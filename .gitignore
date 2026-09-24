@@ -50,6 +50,8 @@ postgres-data/
 .env.*
 
 # ---- Large data / embedding artifacts ----
+*.csv
 *.npz
 *.npy
+data/tile_cache/
 

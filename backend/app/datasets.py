@@ -29,7 +29,7 @@ def list_datasets(conn: Connection) -> list[dict]:
               d.embedding_dim,
               COUNT(m.id)::int AS molecule_count
             FROM datasets d
-            LEFT JOIN molecules m ON m.dataset_id = d.id
+            LEFT JOIN molecule_map m ON m.dataset_id = d.id
             GROUP BY d.id
             ORDER BY d.name
             """

@@ -4,7 +4,10 @@ import { PathLayer, TextLayer } from '@deck.gl/layers';
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useAppStore } from './store';
 import {
-  effectiveRankMax,
+  LOD_STEP_COUNT,
+  aggressivenessForLodLevel,
+  clampLodLevel,
+  labelForLodLevel,
   lodParamsForAggressiveness,
   rankMaxForZoom
 } from './rankLod';
@@ -42,32 +45,31 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
   const apiBase = useAppStore((s) => s.apiBase);
   const datasetSlug = useAppStore((s) => s.datasetSlug);
   const setDatasetSlug = useAppStore((s) => s.setDatasetSlug);
-  const rankCap = useAppStore((s) => s.rankCap);
-  const zoomLodAggressiveness = useAppStore((s) => s.zoomLodAggressiveness);
+  const lodLevel = useAppStore((s) => s.lodLevel);
+  const setLodLevel = useAppStore((s) => s.setLodLevel);
   const viewState = useAppStore((s) => s.viewState);
   const setViewState = useAppStore((s) => s.setViewState);
-  const setRankCap = useAppStore((s) => s.setRankCap);
-  const setZoomLodAggressiveness = useAppStore((s) => s.setZoomLodAggressiveness);
 
   const [datasetRankMax, setDatasetRankMax] = useState(1);
   const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
   const [pointRadius, setPointRadius] = useState(0.01);
   const [showTileGrid, setShowTileGrid] = useState(false);
+  /** Prefer precomputed PMTiles when available; off = live PostGIS MVT. */
+  const [preferPmtiles, setPreferPmtiles] = useState(true);
 
   const tileZ = Math.floor(viewState.zoom);
-  const activeRankMax = effectiveRankMax(
-    viewState.zoom,
-    datasetRankMax,
-    rankCap,
-    zoomLodAggressiveness
-  );
-  const zoomRankMax = rankMaxForZoom(
-    viewState.zoom,
-    datasetRankMax,
-    zoomLodAggressiveness
-  );
-  const lodParams = lodParamsForAggressiveness(zoomLodAggressiveness);
+  const activeRankMax = rankMaxForZoom(viewState.zoom, datasetRankMax, lodLevel);
+  const lodParams = lodParamsForAggressiveness(aggressivenessForLodLevel(lodLevel));
   const activeDataset = datasets.find((d) => d.slug === datasetSlug);
+  const lodLabel = labelForLodLevel(lodLevel);
+  const pmtilesAvailable = Boolean(
+    datasetSlug && activeDataset?.precomputed_lods?.includes(lodLevel)
+  );
+  const usingPrecomputed = preferPmtiles && pmtilesAvailable;
+  const pmtilesUrl =
+    usingPrecomputed && datasetSlug
+      ? `${apiBase}/datasets/${encodeURIComponent(datasetSlug)}/pmtiles/${lodLevel}.pmtiles`
+      : null;
 
   useEffect(() => {
     const ac = new AbortController();
@@ -98,7 +100,6 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
 
         const maxRank = b.max_rank ?? b.count ?? 1;
         setDatasetRankMax(maxRank);
-        setRankCap(Math.min(useAppStore.getState().rankCap, maxRank));
         setPointRadius(
           pointRadiusFromBounds({
             min_lng: b.min_lng,
@@ -130,12 +131,7 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
       }
     })();
     return () => ac.abort();
-  }, [apiBase, datasetSlug, setViewState, setRankCap]);
-
-  const rankSliderMax = Math.max(1_000, datasetRankMax);
-  const rankSliderMin = rankSliderMax <= 1_000 ? 1 : 1_000;
-  const rankSliderStep = rankSliderMax <= 1_000 ? 1 : 1_000;
-  const rankSliderValue = Math.min(rankCap, rankSliderMax);
+  }, [apiBase, datasetSlug, setViewState]);
 
   const tileOutlines = useMemo(() => {
     if (!showTileGrid) return [];
@@ -153,11 +149,11 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
     return visibleTileOutlines(vp.getBounds(), tileZ);
   }, [showTileGrid, viewState, tileZ]);
 
-  const tileParamsKey = `${datasetSlug}:${rankSliderValue}:${zoomLodAggressiveness}`;
+  const tileParamsKey = `${datasetSlug}:${lodLevel}:${usingPrecomputed ? 'pmtiles' : 'live'}`;
 
   const moleculeLayer = useMemo(() => {
     if (!datasetSlug) return null;
-    // Dummy query param busts cache when sliders/dataset change; rank_max is set per tile in getTileData.
+    // Dummy query param busts cache when LOD/dataset/source change; rank_max is set per tile in getTileData.
     const tileData = `${apiBase}/tiles/{z}/{x}/{y}.mvt?_k=${tileParamsKey}`;
 
     return new MoleculeMVTLayer({
@@ -165,9 +161,9 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
       data: tileData,
       moleculeApiBase: apiBase,
       datasetSlug,
-      rankCap: rankSliderValue,
       datasetRankMax,
-      zoomLodAggressiveness,
+      lodLevel,
+      pmtilesUrl,
       binary: false,
       minZoom: 0,
       maxZoom: 23,
@@ -195,9 +191,9 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
     apiBase,
     datasetSlug,
     tileParamsKey,
-    rankSliderValue,
     datasetRankMax,
-    zoomLodAggressiveness,
+    lodLevel,
+    pmtilesUrl,
     pointRadius
   ]);
 
@@ -236,6 +232,14 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
     return [moleculeLayer, outlineLayer, labelLayer];
   }, [moleculeLayer, showTileGrid, tileOutlines]);
 
+  const selectStyle: CSSProperties = {
+    padding: '4px 8px',
+    fontSize: 13,
+    border: '1px solid #ccc',
+    borderRadius: 6,
+    background: '#fff'
+  };
+
   const btnStyle: CSSProperties = {
     padding: '6px 12px',
     fontSize: 13,
@@ -244,6 +248,15 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
     borderRadius: 6,
     background: '#f8f8f8',
     cursor: 'pointer'
+  };
+
+  const stopMapGesture: React.DOMAttributes<HTMLInputElement> = {
+    onPointerDown: (e) => e.stopPropagation(),
+    onPointerMove: (e) => e.stopPropagation(),
+    onMouseDown: (e) => e.stopPropagation(),
+    onMouseMove: (e) => e.stopPropagation(),
+    onTouchStart: (e) => e.stopPropagation(),
+    onTouchMove: (e) => e.stopPropagation()
   };
 
   return (
@@ -270,13 +283,7 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
             <select
               value={datasetSlug}
               onChange={(e) => setDatasetSlug(e.target.value)}
-              style={{
-                padding: '4px 8px',
-                fontSize: 13,
-                border: '1px solid #ccc',
-                borderRadius: 6,
-                background: '#fff'
-              }}
+              style={selectStyle}
             >
               {datasets.map((d) => (
                 <option key={d.slug} value={d.slug}>
@@ -287,42 +294,41 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
           </label>
         )}
         <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
-          <span>rank max</span>
+          <span>LOD</span>
           <input
             type="range"
-            min={rankSliderMin}
-            max={rankSliderMax}
-            step={rankSliderStep}
-            value={rankSliderValue}
-            onChange={(e) => setRankCap(Number(e.target.value))}
-            onPointerDown={(e) => e.stopPropagation()}
-            onPointerMove={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-            onMouseMove={(e) => e.stopPropagation()}
-            onTouchStart={(e) => e.stopPropagation()}
-            onTouchMove={(e) => e.stopPropagation()}
+            min={1}
+            max={LOD_STEP_COUNT}
+            step={1}
+            value={lodLevel}
+            onChange={(e) => setLodLevel(clampLodLevel(Number(e.target.value)))}
+            {...stopMapGesture}
           />
-          <span style={{ width: 64, textAlign: 'right' }}>
-            {rankSliderValue.toLocaleString()}
+          <span style={{ width: 72, textAlign: 'right' }}>
+            {lodLevel}/{LOD_STEP_COUNT} {lodLabel}
           </span>
         </label>
-        <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
-          <span>zoom LOD</span>
+        <label
+          style={{
+            display: 'flex',
+            gap: 6,
+            alignItems: 'center',
+            fontSize: 13,
+            opacity: pmtilesAvailable ? 1 : 0.5
+          }}
+          title={
+            pmtilesAvailable
+              ? 'Use precomputed PMTiles instead of live database MVT tiles'
+              : 'No precomputed PMTiles for this dataset/LOD'
+          }
+        >
           <input
-            type="range"
-            min={0}
-            max={100}
-            step={1}
-            value={zoomLodAggressiveness}
-            onChange={(e) => setZoomLodAggressiveness(Number(e.target.value))}
-            onPointerDown={(e) => e.stopPropagation()}
-            onPointerMove={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-            onMouseMove={(e) => e.stopPropagation()}
-            onTouchStart={(e) => e.stopPropagation()}
-            onTouchMove={(e) => e.stopPropagation()}
+            type="checkbox"
+            checked={preferPmtiles && pmtilesAvailable}
+            disabled={!pmtilesAvailable}
+            onChange={(e) => setPreferPmtiles(e.target.checked)}
           />
-          <span style={{ width: 28, textAlign: 'right' }}>{zoomLodAggressiveness}</span>
+          PMTiles
         </label>
         <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
           <input
@@ -333,9 +339,12 @@ export function ScatterplotView({ onBack }: ScatterplotViewProps) {
           tile grid
         </label>
         <div style={{ marginLeft: 'auto', color: '#666', fontSize: 12 }}>
-          {activeDataset?.name ?? datasetSlug} · rank ≤ {activeRankMax.toLocaleString()} (cap{' '}
-          {rankSliderValue.toLocaleString()}) · zoom budget {zoomRankMax.toLocaleString()} (
-          {lodParams.base.toLocaleString()}×{lodParams.growth}^z) · z={tileZ}
+          {activeDataset?.name ?? datasetSlug} · LOD {lodLevel} ({lodLabel}) · rank ≤{' '}
+          {activeRankMax.toLocaleString()}
+          {lodLevel < LOD_STEP_COUNT
+            ? ` (${lodParams.base.toLocaleString()}×${lodParams.growth}^z)`
+            : ' (all points)'}{' '}
+          · {usingPrecomputed ? 'pmtiles' : 'live'} · z={tileZ}
         </div>
       </div>
 

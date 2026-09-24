@@ -14,7 +14,13 @@ A “Google Maps for molecules” viewer:
 docker compose up -d db
 ```
 
-This creates the `molecules` table from `db/init/010_schema.sql`. A synthetic seed (`020_seed.sql`) may also load on first start; skip or truncate it when loading a real dataset (see below).
+This creates `datasets`, `molecule_map`, and `molecule_details` from `db/init/010_schema.sql`. A synthetic seed (`020_seed.sql`) may also load on first start; skip or truncate it when loading a real dataset (see below).
+
+Existing databases created before the map/details split: run:
+
+```bash
+psql "$DATABASE_URL" -f db/init/040_map_details.sql
+```
 
 Default connection:
 
@@ -50,12 +56,12 @@ Open the URL Vite prints (usually `http://localhost:5173`).
 
 The map needs molecules with:
 
-| Field | Meaning |
-|-------|---------|
-| `smiles` | SMILES string |
-| `rank` | Global importance rank (`1` = best, unique per molecule) |
-| `geom` | PostGIS point from 2D UMAP coordinates (`lng`, `lat`) |
-| `embedding` | Fingerprint vector (pgvector) used for ranking |
+| Field | Table | Meaning |
+|-------|--------|---------|
+| `rank` | `molecule_map` | Global importance rank (`1` = best, unique per dataset) |
+| `geom` | `molecule_map` | PostGIS point from 2D UMAP coordinates (`lng`, `lat`) |
+| `smiles` | `molecule_details` | SMILES string |
+| `embedding` | `molecule_details` | Fingerprint vector (pgvector) used for ranking / search |
 
 The build pipeline:
 
@@ -177,7 +183,7 @@ Example after copying files to `data/`:
 If the synthetic seed or a previous dataset is already loaded:
 
 ```bash
-psql "$DATABASE_URL" -c "TRUNCATE molecules RESTART IDENTITY;"
+psql "$DATABASE_URL" -c "TRUNCATE molecule_map RESTART IDENTITY CASCADE;"
 ```
 
 ### 3) Load
@@ -189,12 +195,12 @@ psql "$DATABASE_URL" -f data/molecules_load.sql
 The loader:
 
 1. `\copy` CSV rows into a temp staging table
-2. Inserts into `molecules`, building `geom` from `lng`/`lat` and casting `embedding` to `vector`
+2. Inserts into `molecule_map` (rank + geom) and `molecule_details` (smiles + embedding)
 
 ### 4) Verify
 
 ```bash
-psql "$DATABASE_URL" -c "SELECT COUNT(*), MIN(rank), MAX(rank) FROM molecules;"
+psql "$DATABASE_URL" -c "SELECT COUNT(*), MIN(rank), MAX(rank) FROM molecule_map;"
 curl http://localhost:8000/bounds
 ```
 
@@ -204,12 +210,31 @@ Restart or refresh the frontend; it auto-fits to `/bounds`.
 
 ## API endpoints
 
-- `GET /health` — DB connectivity
+- `GET /datasets` — list datasets (includes `precomputed_lods` when PMTiles exist)
+- `GET /datasets/{slug}/pmtiles/{lod}.pmtiles` — precomputed MVT archive for one LOD step
+- `GET /datasets/{slug}/tiles-manifest` — bake metadata
 - `GET /bounds` — dataset bounding box, count, rank range
-- `GET /tiles/{z}/{x}/{y}.mvt?rank_max=N` — MVT tile; all molecules with `1 <= rank <= N` in that tile
+- `GET /tiles/{z}/{x}/{y}.mvt?rank_max=N` — live MVT tile (fallback when no PMTiles)
 - `GET /points.pb?minLng=…&minLat=…&maxLng=…&maxLat=…&limit=N` — Protobuf viewport query (optional / future use)
 
-The frontend uses MVT tiles with per-tile zoom LOD: each tile requests a `rank_max` based on its zoom level and the **rank max** / **zoom LOD** sliders.
+The frontend uses MVT tiles with zoom-based rank LOD: each tile requests a `rank_max`
+derived from its zoom level and a 6-step **LOD** aggressiveness slider
+(1 = Sparse … 3 = Balanced … 5 = Dense … 6 = All points, ignoring zoom).
+When precomputed PMTiles exist for the current LOD, those are used instead of live PostGIS.
+
+### Precomputed tiles (PMTiles)
+
+Bake all 6 LOD archives for a dataset (from `backend/`):
+
+```bash
+pip install mercantile pmtiles
+export DATABASE_URL="postgresql://app:app@localhost:5432/molecules"
+python -m scripts.build_precomputed_tiles --dataset zinc10k --max-zoom 12
+```
+
+Outputs under `data/tile_cache/<slug>/lod_1.pmtiles` … `lod_6.pmtiles`.
+Re-run after replacing a dataset. Large datasets (1M+) take much longer — start with `--max-zoom 10`
+and/or bake one LOD: `--lod 3`.
 
 ---
 

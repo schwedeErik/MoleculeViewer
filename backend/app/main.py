@@ -8,6 +8,8 @@ from .datasets import delete_dataset, list_datasets, resolve_dataset_id, validat
 from .db import engine
 from .molecules_pb2 import Points
 from .services.smiles_database import import_dataset_from_csv
+from .services.tile_cache import available_lod_levels, pmtiles_path, read_manifest, tile_cache_root
+from .services.rank_lod import clamp_lod_level
 
 
 app = FastAPI(title="Molecule Map API")
@@ -16,8 +18,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["GET", "POST", "DELETE"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 
@@ -31,7 +34,48 @@ def health() -> dict:
 @app.get("/datasets")
 def datasets() -> list[dict]:
     with engine.connect() as conn:
-        return list_datasets(conn)
+        rows = list_datasets(conn)
+    for row in rows:
+        row["precomputed_lods"] = available_lod_levels(row["slug"])
+    return rows
+
+
+@app.get("/datasets/{slug}/pmtiles/{lod_level}.pmtiles")
+def dataset_pmtiles(slug: str, lod_level: int):
+    """Serve a precomputed PMTiles archive for one LOD step (supports Range requests)."""
+    from fastapi.responses import FileResponse
+
+    validate_slug(slug)
+    level = clamp_lod_level(lod_level)
+    path = pmtiles_path(slug, level)
+    if not path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"No precomputed tiles for dataset={slug} lod={level}. "
+            f"Build with: python -m scripts.build_precomputed_tiles --dataset {slug}",
+        )
+    return FileResponse(
+        path,
+        media_type="application/vnd.pmtiles",
+        filename=f"{slug}_lod_{level}.pmtiles",
+        headers={"Cache-Control": "public, max-age=86400", "Accept-Ranges": "bytes"},
+    )
+
+
+@app.get("/datasets/{slug}/tiles-manifest")
+def dataset_tiles_manifest(slug: str) -> dict:
+    validate_slug(slug)
+    with engine.connect() as conn:
+        resolve_dataset_id(conn, slug)
+    manifest = read_manifest(slug)
+    lods = available_lod_levels(slug)
+    if manifest is None and not lods:
+        raise HTTPException(status_code=404, detail=f"No precomputed tiles for {slug}")
+    return manifest or {
+        "slug": slug,
+        "lod_levels": lods,
+        "tile_cache_dir": str(tile_cache_root() / slug),
+    }
 
 
 @app.post("/datasets")
@@ -91,7 +135,7 @@ def bounds(dataset: str = Query(..., min_length=1)) -> dict:
           MIN(rank) AS min_rank,
           MAX(rank) AS max_rank,
           COUNT(*)::int AS count
-        FROM molecules
+        FROM molecule_map
         WHERE dataset_id = :dataset_id
         """
     )
@@ -124,7 +168,7 @@ def tile(
           ),
           spatial AS MATERIALIZED (
             SELECT m.id, m.rank, m.geom
-            FROM molecules m, bounds4326 b
+            FROM molecule_map m, bounds4326 b
             WHERE m.dataset_id = :dataset_id
               AND m.geom && b.b4326
               AND m.rank <= :rank_max
@@ -176,7 +220,7 @@ def points(
           rank,
           ST_X(geom) AS lng,
           ST_Y(geom) AS lat
-        FROM molecules
+        FROM molecule_map
         WHERE dataset_id = :dataset_id
           AND geom && ST_MakeEnvelope(:minLng, :minLat, :maxLng, :maxLat, 4326)
         ORDER BY rank ASC, id ASC

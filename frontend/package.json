@@ -13,6 +13,9 @@
     "@deck.gl/geo-layers": "^9.1.0",
     "@deck.gl/layers": "^9.1.0",
     "@deck.gl/react": "^9.1.0",
+    "@loaders.gl/core": "^4.4.3",
+    "@loaders.gl/mvt": "^4.4.3",
+    "pmtiles": "^4.4.1",
     "protobufjs": "^7.4.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -26,4 +29,3 @@
     "vite": "^5.4.11"
   }
 }
-

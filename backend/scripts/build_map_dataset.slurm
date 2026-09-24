@@ -10,7 +10,7 @@
 #SBATCH --gpus=1
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --mem=48G
 #SBATCH --time=02:00:00
 #SBATCH --output=molmap-build-%j.log
 
@@ -35,7 +35,8 @@ python -m scripts.build_map_dataset \
   --method "${METHOD:-maccs}" \
   --metric "${METRIC:-euclidean}" \
   --out-dir "${OUT_DIR:-./out}" \
-  --name "${NAME:-molecules}"
+  --name "${NAME:-molecules}" \
+  ${WORKERS:+--workers "$WORKERS"}
 
 echo "Done. Load into Postgres with:"
 echo "  psql \"\$DATABASE_URL\" -f ${OUT_DIR:-./out}/${NAME:-molecules}_load.sql"

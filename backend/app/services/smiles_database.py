@@ -3,9 +3,15 @@ from pathlib import Path
 
 import numpy as np
 
-INSERT_SQL = """
-INSERT INTO molecules (dataset_id, smiles, rank, geom, embedding)
-VALUES (%s, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326), %s::vector)
+INSERT_MAP_SQL = """
+INSERT INTO molecule_map (dataset_id, rank, geom)
+VALUES (%s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326))
+RETURNING id
+"""
+
+INSERT_DETAILS_SQL = """
+INSERT INTO molecule_details (molecule_id, smiles, embedding)
+VALUES (%s, %s, %s::vector)
 """
 
 CSV_HEADER = ["smiles", "rank", "lng", "lat", "embedding"]
@@ -52,7 +58,6 @@ def export_molecules(
     ranks: np.ndarray,
     csv_path: str,
     sql_path: str | None = None,
-    table: str = "molecules",
     dataset_slug: str = "default",
     dataset_name: str | None = None,
     embedding_method: str = "maccs",
@@ -69,7 +74,7 @@ def export_molecules(
         text literal (``[v1,v2,...]``).
       * ``sql_path`` (optional, defaults to ``<csv stem>_load.sql``): a loader
         script for ``psql`` that COPYs the CSV into a staging table and inserts
-        into ``table``, building ``geom`` and casting ``embedding`` to ``vector``.
+        into ``molecule_map`` + ``molecule_details``.
         Run it with: ``psql "$DATABASE_URL" -f <sql_path>``.
 
     Returns:
@@ -98,7 +103,6 @@ def export_molecules(
     sql_file.write_text(
         _loader_sql(
             abs_csv_path=csv_file.resolve(),
-            table=table,
             dataset_slug=dataset_slug,
             dataset_name=dataset_name or dataset_slug,
             embedding_method=embedding_method,
@@ -112,7 +116,6 @@ def export_molecules(
 def _loader_sql(
     *,
     abs_csv_path: Path,
-    table: str,
     dataset_slug: str,
     dataset_name: str,
     embedding_method: str,
@@ -128,7 +131,7 @@ def _loader_sql(
     name_sql = dataset_name.replace("'", "''")
     method_sql = embedding_method.replace("'", "''")
     return f"""\
--- Load exported molecules into the `{table}` table (dataset `{dataset_slug}`).
+-- Load exported molecules into molecule_map + molecule_details (dataset `{dataset_slug}`).
 -- Usage: psql "$DATABASE_URL" -f {abs_csv_path.with_name(abs_csv_path.stem + '_load.sql').name}
 BEGIN;
 
@@ -139,7 +142,7 @@ ON CONFLICT (slug) DO UPDATE
       embedding_method = EXCLUDED.embedding_method,
       embedding_dim = EXCLUDED.embedding_dim;
 
-DELETE FROM {table}
+DELETE FROM molecule_map
 WHERE dataset_id = (SELECT id FROM datasets WHERE slug = '{slug_sql}');
 
 CREATE TEMP TABLE molecules_staging (
@@ -152,14 +155,22 @@ CREATE TEMP TABLE molecules_staging (
 
 \\copy molecules_staging (smiles, rank, lng, lat, embedding) FROM '{abs_csv_path}' WITH (FORMAT csv, HEADER true)
 
-INSERT INTO {table} (dataset_id, smiles, rank, geom, embedding)
+WITH inserted AS (
+  INSERT INTO molecule_map (dataset_id, rank, geom)
+  SELECT
+    (SELECT id FROM datasets WHERE slug = '{slug_sql}'),
+    rank,
+    ST_SetSRID(ST_MakePoint(lng, lat), 4326)
+  FROM molecules_staging
+  RETURNING id, rank
+)
+INSERT INTO molecule_details (molecule_id, smiles, embedding)
 SELECT
-  (SELECT id FROM datasets WHERE slug = '{slug_sql}'),
-  smiles,
-  rank,
-  ST_SetSRID(ST_MakePoint(lng, lat), 4326),
-  embedding::vector
-FROM molecules_staging;
+  inserted.id,
+  s.smiles,
+  s.embedding::vector
+FROM inserted
+JOIN molecules_staging s ON s.rank = inserted.rank;
 
 COMMIT;
 """
@@ -173,6 +184,17 @@ def _embedding_dim_from_literal(embedding: str) -> int:
     if not inner:
         return 0
     return len(inner.split(","))
+
+
+def _insert_map_and_details(cur, batch: list[tuple]) -> None:
+    """Insert map rows then matching detail rows.
+
+    Each batch tuple is ``(dataset_id, smiles, rank, lng, lat, embedding)``.
+    """
+    for dataset_id, smiles, rank, lng, lat, embedding in batch:
+        cur.execute(INSERT_MAP_SQL, (dataset_id, rank, lng, lat))
+        molecule_id = int(cur.fetchone()[0])
+        cur.execute(INSERT_DETAILS_SQL, (molecule_id, smiles, embedding))
 
 
 def import_dataset_from_csv(
@@ -216,7 +238,8 @@ def import_dataset_from_csv(
             )
             dataset_id = int(cur.fetchone()[0])
 
-            cur.execute("DELETE FROM molecules WHERE dataset_id = %s", (dataset_id,))
+            # Cascades to molecule_details via molecule_map FK.
+            cur.execute("DELETE FROM molecule_map WHERE dataset_id = %s", (dataset_id,))
 
             batch: list[tuple] = []
             for row in reader:
@@ -237,11 +260,11 @@ def import_dataset_from_csv(
                 )
                 count += 1
                 if len(batch) >= batch_size:
-                    cur.executemany(INSERT_SQL, batch)
+                    _insert_map_and_details(cur, batch)
                     batch.clear()
 
             if batch:
-                cur.executemany(INSERT_SQL, batch)
+                _insert_map_and_details(cur, batch)
 
             if count == 0:
                 raise ValueError("CSV contains no data rows")
@@ -263,13 +286,16 @@ def store_molecules(
     projection: np.ndarray,
     ranks: np.ndarray,
     database_url: str | None = None,
+    dataset_slug: str = "default",
+    dataset_name: str | None = None,
+    embedding_method: str = "maccs",
     truncate: bool = False,
     batch_size: int = 10_000,
 ) -> int:
-    """Persist molecules and their derived data to the ``molecules`` table.
+    """Persist molecules into ``molecule_map`` + ``molecule_details``.
 
-    Each row stores the SMILES string, its representativeness rank, the 2D UMAP
-    projection (as a PostGIS point in ``geom``), and the embedding vector.
+    Each molecule stores representativeness rank and 2D UMAP projection on the
+    map table, and SMILES + embedding on the details table.
 
     Args:
         smiles: Object/str array of shape ``(n,)``.
@@ -279,8 +305,11 @@ def store_molecules(
             interpreted as ``(x -> longitude, y -> latitude)``.
         ranks: Integer array of shape ``(n,)``.
         database_url: Override for ``settings.database_url``.
-        truncate: If True, empty the table before inserting.
-        batch_size: Rows per ``executemany`` batch.
+        dataset_slug: Dataset slug to create/replace.
+        dataset_name: Display name (defaults to slug).
+        embedding_method: Stored on the datasets row.
+        truncate: If True, empty both molecule tables before inserting.
+        batch_size: Rows per insert batch.
 
     Returns:
         Number of rows inserted.
@@ -294,16 +323,35 @@ def store_molecules(
         return 0
 
     url = _psycopg_url(database_url or settings.database_url)
+    embedding_dim = int(embeddings.shape[1]) if embeddings.ndim == 2 else 167
 
     with psycopg.connect(url) as conn:
         with conn.cursor() as cur:
             if truncate:
-                cur.execute("TRUNCATE TABLE molecules RESTART IDENTITY;")
+                cur.execute("TRUNCATE TABLE molecule_map RESTART IDENTITY CASCADE;")
+
+            cur.execute(
+                """
+                INSERT INTO datasets (slug, name, embedding_method, embedding_dim)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (slug) DO UPDATE
+                  SET name = EXCLUDED.name,
+                      embedding_method = EXCLUDED.embedding_method,
+                      embedding_dim = EXCLUDED.embedding_dim
+                RETURNING id
+                """,
+                (dataset_slug, dataset_name or dataset_slug, embedding_method, embedding_dim),
+            )
+            dataset_id = int(cur.fetchone()[0])
+
+            if not truncate:
+                cur.execute("DELETE FROM molecule_map WHERE dataset_id = %s", (dataset_id,))
 
             batch: list[tuple] = []
             for i in range(n):
                 batch.append(
                     (
+                        dataset_id,
                         str(smiles[i]),
                         int(ranks[i]),
                         float(projection[i, 0]),
@@ -312,11 +360,11 @@ def store_molecules(
                     )
                 )
                 if len(batch) >= batch_size:
-                    cur.executemany(INSERT_SQL, batch)
+                    _insert_map_and_details(cur, batch)
                     batch.clear()
 
             if batch:
-                cur.executemany(INSERT_SQL, batch)
+                _insert_map_and_details(cur, batch)
 
         conn.commit()
 

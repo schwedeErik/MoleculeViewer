@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { DEFAULT_LOD_LEVEL } from './rankLod';
 
 type ViewState = {
   longitude: number;
@@ -11,20 +12,18 @@ type ViewState = {
 type AppState = {
   apiBase: string;
   datasetSlug: string | null;
-  rankCap: number;
-  zoomLodAggressiveness: number;
+  /** LOD aggressiveness step 1…LOD_STEP_COUNT (1 = sparse, mid = balanced, max = dense). */
+  lodLevel: number;
   viewState: ViewState;
   setDatasetSlug: (datasetSlug: string | null) => void;
-  setRankCap: (rankCap: number) => void;
-  setZoomLodAggressiveness: (zoomLodAggressiveness: number) => void;
+  setLodLevel: (lodLevel: number) => void;
   setViewState: (viewState: ViewState) => void;
 };
 
 export const useAppStore = create<AppState>((set) => ({
-  apiBase: 'http://localhost:8000',
+  apiBase: import.meta.env.VITE_API_BASE ?? '/api',
   datasetSlug: null,
-  rankCap: 1_000_000,
-  zoomLodAggressiveness: 50,
+  lodLevel: DEFAULT_LOD_LEVEL,
   viewState: {
     longitude: -3.9,
     latitude: -2.8,
@@ -33,7 +32,6 @@ export const useAppStore = create<AppState>((set) => ({
     bearing: 0
   },
   setDatasetSlug: (datasetSlug) => set({ datasetSlug }),
-  setRankCap: (rankCap) => set({ rankCap }),
-  setZoomLodAggressiveness: (zoomLodAggressiveness) => set({ zoomLodAggressiveness }),
+  setLodLevel: (lodLevel) => set({ lodLevel }),
   setViewState: (viewState) => set({ viewState })
 }));
