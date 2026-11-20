@@ -1,0 +1,24 @@
+{
+  "slug": "chembl13m",
+  "order": "ranked",
+  "seed": null,
+  "tile_size": 50000,
+  "include_smiles": false,
+  "built_at": "2026-09-24T13:31:43.316017+00:00",
+  "count": 1358976,
+  "max_rank": 1358976,
+  "bounds": {
+    "min_x": -4589.59375,
+    "max_x": 4519.5009765625,
+    "min_y": -4652.708984375,
+    "max_y": 4185.66796875
+  },
+  "columns": [
+    "x",
+    "y",
+    "id",
+    "rank"
+  ],
+  "source_url_path": "/deepscatter/chembl13m/ranked",
+  "notes": "Deepscatter LOD follows file row order: ranked = low rank first; shuffled = same points, random order (RQ1 ablation)."
+}
