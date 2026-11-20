@@ -8,6 +8,7 @@ import {
   labelForLodLevel,
   maxPointsForLodLevel
 } from './deepscatterLod';
+import { installDeepscatterBigIntFix } from './deepscatterBigIntFix';
 import { SmilesStructure } from './SmilesStructure';
 import { useAppStore } from './store';
 import type { DatasetInfo } from './types';
@@ -437,6 +438,8 @@ export function DeepscatterView({ onBack }: DeepscatterViewProps) {
         });
 
         if (cancelled) return;
+
+        installDeepscatterBigIntFix(plot);
 
         plot.click_function = (datum: Record<string, unknown>) => {
           const id = Number(datum.id ?? datum.molecule_id);
