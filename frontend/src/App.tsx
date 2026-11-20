@@ -38,15 +38,6 @@ export function App() {
     void loadDatasets();
   }, [loadDatasets]);
 
-  // Static demo: skip the setup screen when there is exactly one dataset.
-  useEffect(() => {
-    if (!isStatic || loading || error || datasets.length !== 1) return;
-    const only = datasets[0];
-    if (!only?.slug) return;
-    setDatasetSlug(only.slug);
-    setScreen('map');
-  }, [datasets, loading, error, setDatasetSlug]);
-
   const selectedDataset = datasets.find((d) => d.slug === selectedSlug);
 
   if (screen === 'map' && datasetSlug) {

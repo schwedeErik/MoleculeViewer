@@ -536,20 +536,19 @@ export function DeepscatterView({ onBack }: DeepscatterViewProps) {
           flexShrink: 0
         }}
       >
-        {!isStatic && (
-          <button type="button" style={btnStyle} onClick={onBack}>
-            ← Dataset
-          </button>
-        )}
+        <button type="button" style={btnStyle} onClick={onBack}>
+          ← Dataset
+        </button>
         <div style={{ fontWeight: 600 }}>Molecule Map · Deepscatter</div>
 
-        {datasets.length > 1 && datasetSlug && (
+        {datasetSlug && (
           <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
             <span>dataset</span>
             <select
               value={datasetSlug}
               onChange={(e) => setDatasetSlug(e.target.value)}
               style={selectStyle}
+              disabled={datasets.length === 0}
             >
               {datasets.map((d) => (
                 <option key={d.slug} value={d.slug}>
