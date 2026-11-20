@@ -2,8 +2,8 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 const isStatic = process.env.VITE_STATIC === 'true';
-/** GitHub project Pages path; override with VITE_BASE=/ for user/org pages. */
-const base = process.env.VITE_BASE ?? (isStatic ? '/MoleculeViewer/' : '/');
+/** Custom domain (chemmaps.de) and local static preview use `/`. */
+const base = process.env.VITE_BASE ?? '/';
 
 export default defineConfig({
   base,

@@ -19,9 +19,19 @@ npm run build:pages          # base = /MoleculeViewer/
 npm run dev:static
 ```
 
-Deploy: push `static-gh-pages`, enable **Settings → Pages → Source: GitHub Actions**. The workflow `.github/workflows/github-pages.yml` builds and publishes `frontend/dist`. Site URL: `https://<user>.github.io/MoleculeViewer/`.
+Deploy: push `static-gh-pages`, enable **Settings → Pages → Source: GitHub Actions**. The workflow builds `frontend/dist` with base `/` for the custom domain.
 
-Override the Vite base for a user/org site root with `VITE_BASE=/`.
+**Custom domain `chemmaps.de`:** `frontend/public/CNAME` is included in the build. In repo **Settings → Pages → Custom domain**, set `chemmaps.de` and enable **Enforce HTTPS** after DNS works. At Namecheap (Advanced DNS):
+
+| Type | Host | Value |
+|------|------|-------|
+| A | `@` | `185.199.108.153` |
+| A | `@` | `185.199.109.153` |
+| A | `@` | `185.199.110.153` |
+| A | `@` | `185.199.111.153` |
+| CNAME | `www` | `schwedeErik.github.io` |
+
+Remove Namecheap parking/URL-redirect records that conflict. DNS can take minutes to hours; then https://chemmaps.de/
 
 Structure hover/detail SVGs need the FastAPI + RDKit backend; the static build shows rank/id only.
 
