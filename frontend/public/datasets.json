@@ -9,12 +9,12 @@
     "deepscatter_orders": ["ranked", "shuffled"]
   },
   {
-    "id": 1,
-    "slug": "zinc10k",
-    "name": "ZINC 10k",
+    "id": 3,
+    "slug": "zinc250k",
+    "name": "ZINC 250k",
     "embedding_method": "maccs",
     "embedding_dim": 167,
-    "molecule_count": 10000,
+    "molecule_count": 249455,
     "deepscatter_orders": ["ranked", "shuffled"]
   }
 ]
