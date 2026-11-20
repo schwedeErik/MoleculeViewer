@@ -1,6 +1,6 @@
 import Scatterplot from 'deepscatter';
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { apiBase, datasetsUrl, deepscatterTilesUrl, isStatic } from './config';
+import { apiBase, deepscatterTilesUrl, isStatic, loadDatasetsCatalog } from './config';
 import {
   DEFAULT_LOD_LEVEL,
   LOD_STEP_COUNT,
@@ -266,9 +266,7 @@ export function DeepscatterView({ onBack }: DeepscatterViewProps) {
     const ac = new AbortController();
     (async () => {
       try {
-        const res = await fetch(datasetsUrl(), { signal: ac.signal });
-        if (!res.ok) return;
-        setDatasets(await res.json());
+        setDatasets(await loadDatasetsCatalog(ac.signal));
       } catch (e) {
         if ((e as Error).name === 'AbortError') return;
       }

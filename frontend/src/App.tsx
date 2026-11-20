@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
-import { datasetsUrl, isStatic } from './config';
+import { isStatic, loadDatasetsCatalog } from './config';
 import { DeepscatterView } from './DeepscatterView';
 import { useAppStore } from './store';
 import { embeddingMethodLabel, type DatasetInfo } from './types';
@@ -18,9 +18,7 @@ export function App() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(datasetsUrl());
-      if (!res.ok) throw new Error(`Failed to load datasets (${res.status})`);
-      const data: DatasetInfo[] = await res.json();
+      const data = await loadDatasetsCatalog();
       setDatasets(data);
       setSelectedSlug((prev) => {
         if (prev && data.some((d) => d.slug === prev)) return prev;
