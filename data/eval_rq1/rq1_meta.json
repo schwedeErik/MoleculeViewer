@@ -1,0 +1,12 @@
+{
+  "datasets": [
+    "zinc10k",
+    "zinc250k",
+    "chembl13m"
+  ],
+  "shuffle_seed": 42,
+  "n_clusters": 100,
+  "fill_query_cap": 20000,
+  "scaffold_k_cap": 20000,
+  "n_rows": 50
+}

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { DatasetUpload } from './DatasetUpload';
+import { DeepscatterView } from './DeepscatterView';
 import { ScatterplotView } from './ScatterplotView';
 import { useAppStore } from './store';
 import { embeddingMethodLabel, type DatasetInfo } from './types';
@@ -9,7 +10,7 @@ export function App() {
   const datasetSlug = useAppStore((s) => s.datasetSlug);
   const setDatasetSlug = useAppStore((s) => s.setDatasetSlug);
 
-  const [screen, setScreen] = useState<'setup' | 'scatterplot'>('setup');
+  const [screen, setScreen] = useState<'setup' | 'deepscatter' | 'mvt'>('setup');
   const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
   const [selectedSlug, setSelectedSlug] = useState<string>('');
   const [loading, setLoading] = useState(true);
@@ -42,8 +43,17 @@ export function App() {
 
   const selectedDataset = datasets.find((d) => d.slug === selectedSlug);
 
-  if (screen === 'scatterplot' && datasetSlug) {
-    return <ScatterplotView onBack={() => setScreen('setup')} />;
+  if (screen === 'deepscatter' && datasetSlug) {
+    return (
+      <DeepscatterView
+        onBack={() => setScreen('setup')}
+        onOpenLegacyMvt={() => setScreen('mvt')}
+      />
+    );
+  }
+
+  if (screen === 'mvt' && datasetSlug) {
+    return <ScatterplotView onBack={() => setScreen('deepscatter')} />;
   }
 
   const fieldStyle = {
@@ -134,6 +144,8 @@ export function App() {
         </h1>
         <p style={{ margin: '0 0 24px', fontSize: 14, color: '#666', lineHeight: 1.5 }}>
           Choose a dataset loaded in PostgreSQL, or upload a new CSV export from the pipeline.
+          The main viewer uses Deepscatter (quadfeather tiles); legacy MVT remains available
+          from the map toolbar.
         </p>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -174,6 +186,12 @@ export function App() {
               <div>
                 <strong>Slug:</strong> {selectedDataset.slug}
               </div>
+              <div>
+                <strong>Deepscatter tiles:</strong>{' '}
+                {(selectedDataset.deepscatter_orders?.length ?? 0) > 0
+                  ? selectedDataset.deepscatter_orders!.join(', ')
+                  : 'not built yet'}
+              </div>
               <button
                 type="button"
                 disabled={deleting}
@@ -206,10 +224,10 @@ export function App() {
           disabled={!canOpen}
           onClick={() => {
             setDatasetSlug(selectedSlug);
-            setScreen('scatterplot');
+            setScreen('deepscatter');
           }}
         >
-          Open scatterplot
+          Open Deepscatter map
         </button>
 
         <DatasetUpload

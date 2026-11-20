@@ -13,3 +13,5 @@ datasets==3.6.0
 tqdm==4.67.1
 mercantile==1.2.1
 pmtiles==3.4.1
+# Deepscatter tile builds (required for build_deepscatter_tiles.py)
+quadfeather>=2.1.0rc1

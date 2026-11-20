@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from sqlalchemy import text
 
 from .datasets import delete_dataset, list_datasets, resolve_dataset_id, validate_slug
 from .db import engine
 from .molecules_pb2 import Points
+from .services import deepscatter_tiles, structure_svg
 from .services.smiles_database import import_dataset_from_csv
 from .services.tile_cache import available_lod_levels, pmtiles_path, read_manifest, tile_cache_root
 from .services.rank_lod import clamp_lod_level
@@ -37,14 +39,114 @@ def datasets() -> list[dict]:
         rows = list_datasets(conn)
     for row in rows:
         row["precomputed_lods"] = available_lod_levels(row["slug"])
+        row["deepscatter_orders"] = deepscatter_tiles.available_orders(row["slug"])
     return rows
+
+
+@app.get("/deepscatter/{slug}/{order}/{file_path:path}")
+def deepscatter_tile(slug: str, order: str, file_path: str):
+    """Serve a file from a quadfeather / Deepscatter tile tree."""
+    validate_slug(slug)
+    if order not in {"ranked", "shuffled"}:
+        raise HTTPException(status_code=400, detail="order must be ranked or shuffled")
+    path = deepscatter_tiles.resolve_tile_file(slug, order, file_path)
+    if path is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Deepscatter tile not found: {slug}/{order}/{file_path}. "
+                f"Build with: python -m scripts.build_deepscatter_tiles --dataset {slug}"
+                + (" --order shuffled" if order == "shuffled" else "")
+            ),
+        )
+    media = "application/json" if path.suffix == ".json" else "application/octet-stream"
+    if path.suffix == ".feather":
+        media = "application/vnd.apache.arrow.file"
+    return FileResponse(
+        path,
+        media_type=media,
+        headers={
+            # Tiles change when rebuilt; avoid sticky browser caches of bad feathers.
+            "Cache-Control": "no-cache, must-revalidate",
+        },
+    )
+
+
+@app.head("/deepscatter/{slug}/{order}/{file_path:path}")
+def deepscatter_tile_head(slug: str, order: str, file_path: str):
+    """HEAD support for tile probes (some clients check existence first)."""
+    return deepscatter_tile(slug, order, file_path)
+
+
+@app.get("/molecules/{molecule_id}")
+def molecule_detail(
+    molecule_id: int,
+    dataset: str = Query(..., min_length=1),
+) -> dict:
+    """Return map + detail fields for a clicked molecule."""
+    sql = text(
+        """
+        SELECT
+          m.id,
+          m.rank,
+          ST_X(m.geom) AS lng,
+          ST_Y(m.geom) AS lat,
+          d.smiles,
+          d.name
+        FROM molecule_map m
+        LEFT JOIN molecule_details d ON d.molecule_id = m.id
+        WHERE m.id = :molecule_id
+          AND m.dataset_id = :dataset_id
+        """
+    )
+    with engine.connect() as conn:
+        dataset_id = resolve_dataset_id(conn, dataset)
+        row = conn.execute(
+            sql, {"molecule_id": molecule_id, "dataset_id": dataset_id}
+        ).mappings().first()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Molecule not found: {molecule_id}")
+    return dict(row)
+
+
+@app.get("/molecules/{molecule_id}/structure.svg")
+def molecule_structure_svg(
+    molecule_id: int,
+    dataset: str = Query(..., min_length=1),
+    width: int = Query(240, ge=structure_svg.MIN_SIZE, le=structure_svg.MAX_SIZE),
+    height: int = Query(180, ge=structure_svg.MIN_SIZE, le=structure_svg.MAX_SIZE),
+) -> Response:
+    """Return a 2D structure depiction (SVG) of one molecule, drawn with RDKit."""
+    sql = text(
+        """
+        SELECT d.smiles
+        FROM molecule_map m
+        JOIN molecule_details d ON d.molecule_id = m.id
+        WHERE m.id = :molecule_id
+          AND m.dataset_id = :dataset_id
+        """
+    )
+    with engine.connect() as conn:
+        dataset_id = resolve_dataset_id(conn, dataset)
+        smiles = conn.execute(
+            sql, {"molecule_id": molecule_id, "dataset_id": dataset_id}
+        ).scalar_one_or_none()
+    if not smiles:
+        raise HTTPException(status_code=404, detail=f"No SMILES for molecule: {molecule_id}")
+    svg = structure_svg.smiles_to_svg(smiles, width, height)
+    if svg is None:
+        raise HTTPException(status_code=422, detail=f"RDKit could not parse SMILES of {molecule_id}")
+    return Response(
+        content=svg,
+        media_type="image/svg+xml",
+        # A molecule's structure never changes, so the browser may cache it.
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @app.get("/datasets/{slug}/pmtiles/{lod_level}.pmtiles")
 def dataset_pmtiles(slug: str, lod_level: int):
     """Serve a precomputed PMTiles archive for one LOD step (supports Range requests)."""
-    from fastapi.responses import FileResponse
-
     validate_slug(slug)
     level = clamp_lod_level(lod_level)
     path = pmtiles_path(slug, level)

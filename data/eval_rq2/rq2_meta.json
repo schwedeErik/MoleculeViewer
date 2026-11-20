@@ -1,0 +1,12 @@
+{
+  "datasets": [
+    "zinc10k",
+    "zinc250k",
+    "chembl13m"
+  ],
+  "lod_level": 3,
+  "deepscatter_order": "ranked",
+  "repeats": 3,
+  "api_base": "http://127.0.0.1:8000",
+  "skip_online": false
+}

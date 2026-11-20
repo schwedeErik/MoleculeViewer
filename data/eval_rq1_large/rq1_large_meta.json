@@ -1,0 +1,7 @@
+{
+  "datasets": [
+    "zinc250k"
+  ],
+  "shuffle_seeds": 10,
+  "bridge_n": 25000
+}

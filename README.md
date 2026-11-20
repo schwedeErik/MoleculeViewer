@@ -1,10 +1,11 @@
-# Molecule Map (PostGIS + pgvector + FastAPI + deck.gl)
+# Molecule Map (PostGIS + pgvector + FastAPI + Deepscatter)
 
 A “Google Maps for molecules” viewer:
 
-- **DB**: PostgreSQL + **PostGIS** + **pgvector**
-- **Backend**: **FastAPI** serving **MVT** tiles and optional **Protobuf** viewport queries
-- **Frontend**: **React + deck.gl** with zoom-based rank LOD
+- **DB**: PostgreSQL + **PostGIS** + **pgvector** (metadata + click details; optional live MVT)
+- **Tiles**: **quadfeather** trees served statically; **Deepscatter** renders millions of points
+- **LOD**: importance encoded as **file row order** (rank-sorted before tiling), not runtime `rank_max`
+- **Legacy**: deck.gl + PostGIS/PMTiles MVT still available from the map toolbar
 
 ## Quick start
 
@@ -40,15 +41,37 @@ uvicorn app.main:app --reload --port 8000
 
 Health check: `http://localhost:8000/health`
 
-### 3) Run frontend (dev)
+### 3) Build Deepscatter tiles
+
+After a dataset is in Postgres (e.g. `zinc10k`):
+
+```bash
+cd backend
+source .venv/bin/activate
+python -m scripts.build_deepscatter_tiles --dataset zinc10k
+# RQ1 ablation (same coords, shuffled file order):
+python -m scripts.build_deepscatter_tiles --dataset zinc10k --order shuffled
+```
+
+Or from a pipeline CSV (`smiles,rank,lng,lat,…`):
+
+```bash
+python -m scripts.build_deepscatter_tiles --csv ../data/molecules_10k.csv --slug zinc10k
+```
+
+Outputs under `data/deepscatter/<slug>/{ranked|shuffled}/` (gitignored).
+Tiles are served at `/deepscatter/<slug>/<order>/…`.
+
+### 4) Run frontend (dev)
 
 ```bash
 cd frontend
-npm install
+npm install --legacy-peer-deps
 npm run dev
 ```
 
-Open the URL Vite prints (usually `http://localhost:5173`).
+Open the URL Vite prints (usually `http://localhost:5173`). Choose a dataset and
+**Open Deepscatter map**. Use **Legacy MVT** in the toolbar for the old deck.gl viewer.
 
 ---
 
@@ -70,6 +93,7 @@ The build pipeline:
 3. Rank by representativeness (`app/services/smiles_ranking.py`)
 4. Project to 2D with UMAP (GPU via cuML when available)
 5. Export **`molecules.csv`** + **`molecules_load.sql`** for PostgreSQL
+6. **New:** `python -m scripts.build_deepscatter_tiles --dataset <slug>` → quadfeather tiles
 
 Code lives in `backend/app/services/` and is driven by `backend/scripts/build_map_dataset.py`.
 
@@ -172,12 +196,6 @@ The generated `molecules_load.sql` contains an absolute path to the CSV in its `
 - Run `psql` from the directory that contains the CSV and edit the path in the SQL file, or
 - Keep the CSV next to the SQL file and use the path written by the export script.
 
-Example after copying files to `data/`:
-
-```bash
-# Edit the \copy ... FROM '...' line in molecules_load.sql if needed
-```
-
 ### 2) (Recommended) Clear old data
 
 If the synthetic seed or a previous dataset is already loaded:
@@ -192,39 +210,40 @@ psql "$DATABASE_URL" -c "TRUNCATE molecule_map RESTART IDENTITY CASCADE;"
 psql "$DATABASE_URL" -f data/molecules_load.sql
 ```
 
-The loader:
-
-1. `\copy` CSV rows into a temp staging table
-2. Inserts into `molecule_map` (rank + geom) and `molecule_details` (smiles + embedding)
-
 ### 4) Verify
 
 ```bash
 psql "$DATABASE_URL" -c "SELECT COUNT(*), MIN(rank), MAX(rank) FROM molecule_map;"
-curl http://localhost:8000/bounds
+curl "http://localhost:8000/bounds?dataset=zinc10k"
 ```
 
-Restart or refresh the frontend; it auto-fits to `/bounds`.
+### 5) Build Deepscatter tiles
+
+```bash
+cd backend && python -m scripts.build_deepscatter_tiles --dataset zinc10k
+```
 
 ---
 
 ## API endpoints
 
-- `GET /datasets` — list datasets (includes `precomputed_lods` when PMTiles exist)
-- `GET /datasets/{slug}/pmtiles/{lod}.pmtiles` — precomputed MVT archive for one LOD step
-- `GET /datasets/{slug}/tiles-manifest` — bake metadata
+- `GET /datasets` — list datasets (`precomputed_lods`, `deepscatter_orders`)
+- `GET /deepscatter/{slug}/{order}/{path}` — static quadfeather tile files (`order`: `ranked`|`shuffled`)
+- `GET /molecules/{id}?dataset=` — click detail (SMILES, rank, coords)
 - `GET /bounds` — dataset bounding box, count, rank range
-- `GET /tiles/{z}/{x}/{y}.mvt?rank_max=N` — live MVT tile (fallback when no PMTiles)
-- `GET /points.pb?minLng=…&minLat=…&maxLng=…&maxLat=…&limit=N` — Protobuf viewport query (optional / future use)
+- `GET /datasets/{slug}/pmtiles/{lod}.pmtiles` — legacy precomputed MVT archive
+- `GET /datasets/{slug}/tiles-manifest` — legacy PMTiles bake metadata
+- `GET /tiles/{z}/{x}/{y}.mvt?rank_max=N` — legacy live MVT tile
+- `GET /points.pb?…` — Protobuf viewport query (optional)
 
-The frontend uses MVT tiles with zoom-based rank LOD: each tile requests a `rank_max`
-derived from its zoom level and a 6-step **LOD** aggressiveness slider
-(1 = Sparse … 3 = Balanced … 5 = Dense … 6 = All points, ignoring zoom).
-When precomputed PMTiles exist for the current LOD, those are used instead of live PostGIS.
+### Deepscatter LOD model
 
-### Precomputed tiles (PMTiles)
+1. Export molecules sorted by **`rank` ascending** (`x`,`y` from UMAP; optional `id`,`rank`,`smiles`).
+2. Run **quadfeather** → nested Feather tile tree (row order = quadtree priority).
+3. Frontend Deepscatter draws with a **`max_points`** budget (LOD slider) and colors by `rank`.
+4. For RQ1, build a second tree with `--order shuffled` (same points, different file order).
 
-Bake all 6 LOD archives for a dataset (from `backend/`):
+### Legacy precomputed tiles (PMTiles)
 
 ```bash
 pip install mercantile pmtiles
@@ -233,13 +252,11 @@ python -m scripts.build_precomputed_tiles --dataset zinc10k --max-zoom 12
 ```
 
 Outputs under `data/tile_cache/<slug>/lod_1.pmtiles` … `lod_6.pmtiles`.
-Re-run after replacing a dataset. Large datasets (1M+) take much longer — start with `--max-zoom 10`
-and/or bake one LOD: `--lod 3`.
 
 ---
 
 ## Notes
 
-- Ranks are **globally unique** (`1` … `N`). `rank_max=10_000` means exactly those 10,000 molecules, split across tiles by location.
-- For 10M+ molecules, build on a GPU cluster, load once, then serve via MVT + zoom LOD (no need to fetch the full rank range at low zoom).
+- Ranks are **globally unique** (`1` … `N`). In Deepscatter, low ranks appear earlier in the file and therefore in coarser quadtree levels.
+- Deepscatter is licensed **NC-CC-BY-SA** (fine for thesis; document it).
 - Ranking details: [`docs/ranking_algorithm_presentation.md`](docs/ranking_algorithm_presentation.md)

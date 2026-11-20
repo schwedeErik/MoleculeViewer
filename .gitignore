@@ -54,4 +54,6 @@ postgres-data/
 *.npz
 *.npy
 data/tile_cache/
+data/deepscatter/
+data/eval_rq1/cache/
 

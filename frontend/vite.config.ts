@@ -14,4 +14,12 @@ export default defineConfig({
       },
     },
   },
+  optimizeDeps: {
+    include: ['deepscatter'],
+  },
+  build: {
+    commonjsOptions: {
+      transformMixedEsModules: true,
+    },
+  },
 });
