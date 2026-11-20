@@ -5,19 +5,31 @@
  * tries to draw (coarser overview vs denser).
  */
 
-export const LOD_STEP_COUNT = 6;
-export const DEFAULT_LOD_LEVEL = 3;
+export const LOD_STEP_COUNT = 8;
+/** Default = Balanced (75k budget). */
+export const DEFAULT_LOD_LEVEL = 5;
 
 const MAX_POINTS_BY_LEVEL: readonly number[] = [
-  5_000, // 1 Sparse
-  20_000, // 2
-  75_000, // 3 Balanced
-  200_000, // 4
-  500_000, // 5 Dense
-  2_000_000 // 6 All (practical cap)
+  500, // 1 Tiny
+  1_500, // 2 Minimal
+  5_000, // 3 Sparse
+  20_000, // 4 Lean
+  75_000, // 5 Balanced
+  200_000, // 6 Fuller
+  500_000, // 7 Dense
+  2_000_000 // 8 All (practical cap)
 ];
 
-const LABELS = ['Sparse', 'Lean', 'Balanced', 'Fuller', 'Dense', 'All'] as const;
+const LABELS = [
+  'Tiny',
+  'Minimal',
+  'Sparse',
+  'Lean',
+  'Balanced',
+  'Fuller',
+  'Dense',
+  'All'
+] as const;
 
 export function clampLodLevel(level: number): number {
   if (!Number.isFinite(level)) return DEFAULT_LOD_LEVEL;
@@ -29,5 +41,5 @@ export function labelForLodLevel(level: number): string {
 }
 
 export function maxPointsForLodLevel(level: number): number {
-  return MAX_POINTS_BY_LEVEL[clampLodLevel(level) - 1] ?? MAX_POINTS_BY_LEVEL[2];
+  return MAX_POINTS_BY_LEVEL[clampLodLevel(level) - 1] ?? MAX_POINTS_BY_LEVEL[4];
 }

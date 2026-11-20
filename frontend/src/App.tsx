@@ -23,7 +23,8 @@ export function App() {
       setSelectedSlug((prev) => {
         if (prev && data.some((d) => d.slug === prev)) return prev;
         if (datasetSlug && data.some((d) => d.slug === datasetSlug)) return datasetSlug;
-        return data[0]?.slug ?? '';
+        const preferred = data.find((d) => d.slug === 'chembl13m');
+        return preferred?.slug ?? data[0]?.slug ?? '';
       });
     } catch (e) {
       setError((e as Error).message);

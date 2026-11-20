@@ -1,20 +1,20 @@
 [
   {
-    "id": 1,
-    "slug": "zinc10k",
-    "name": "ZINC 10k",
-    "embedding_method": "maccs",
-    "embedding_dim": 167,
-    "molecule_count": 10000,
-    "deepscatter_orders": ["ranked", "shuffled"]
-  },
-  {
     "id": 2,
     "slug": "chembl13m",
     "name": "ChEMBL (~1.4M)",
     "embedding_method": "maccs",
     "embedding_dim": 167,
     "molecule_count": 1358976,
+    "deepscatter_orders": ["ranked", "shuffled"]
+  },
+  {
+    "id": 1,
+    "slug": "zinc10k",
+    "name": "ZINC 10k",
+    "embedding_method": "maccs",
+    "embedding_dim": 167,
+    "molecule_count": 10000,
     "deepscatter_orders": ["ranked", "shuffled"]
   }
 ]
