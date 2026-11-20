@@ -49,6 +49,23 @@ const TOOLTIP_OFFSET = 16;
 const DETAIL_IMG_W = 280;
 const DETAIL_IMG_H = 210;
 
+/** Deepscatter's zoom-scaled index cutoff (not the same as the slider budget). */
+function readLiveMaxIx(plot: InstanceType<typeof Scatterplot> | null): number | null {
+  const v = plot?._renderer?.max_ix;
+  return typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : null;
+}
+
+function formatMapStatus(
+  name: string,
+  tileOrder: string,
+  budget: number,
+  liveIx: number | null
+): string {
+  const base = `${name} · ${tileOrder} · budget=${budget.toLocaleString()}`;
+  if (liveIx == null) return base;
+  return `${base} · live≈${liveIx.toLocaleString()}`;
+}
+
 function structureSvgUrl(slug: string, moleculeId: number, width: number, height: number): string | null {
   if (isStatic || !apiBase) return null;
   return (
@@ -273,6 +290,24 @@ export function DeepscatterView({ onBack }: DeepscatterViewProps) {
   const tilesReady = Boolean(datasetSlug && ordersAvailable.includes(order));
   const lodLabel = labelForLodLevel(lodLevel);
   const maxPoints = maxPointsForLodLevel(lodLevel);
+  const statusName = activeDataset?.name ?? datasetSlug ?? '';
+  const statusNameRef = useRef(statusName);
+  statusNameRef.current = statusName;
+  const orderRef = useRef(order);
+  orderRef.current = order;
+  const maxPointsRef = useRef(maxPoints);
+  maxPointsRef.current = maxPoints;
+
+  const refreshStatus = useCallback(() => {
+    setStatus(
+      formatMapStatus(
+        statusNameRef.current,
+        orderRef.current,
+        maxPointsRef.current,
+        readLiveMaxIx(plotRef.current)
+      )
+    );
+  }, []);
 
   useEffect(() => {
     const ac = new AbortController();
@@ -450,10 +485,19 @@ export function DeepscatterView({ onBack }: DeepscatterViewProps) {
           }, HOVER_DELAY_MS);
         };
 
+        plot.on_zoom = () => {
+          refreshStatus();
+        };
+
         readyRef.current = true;
         setPlotReady(true);
         setStatus(
-          `${activeDataset?.name ?? datasetSlug} · ${order} · max_points=${maxPoints.toLocaleString()}`
+          formatMapStatus(
+            activeDataset?.name ?? datasetSlug,
+            order,
+            maxPoints,
+            readLiveMaxIx(plot)
+          )
         );
       } catch (e) {
         console.error('Deepscatter load failed', e);
@@ -482,7 +526,7 @@ export function DeepscatterView({ onBack }: DeepscatterViewProps) {
     };
     // Intentionally omit maxPoints/pointSize — those update in the next effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [datasetSlug, order, tilesReady, selectMolecule, clearHover]);
+  }, [datasetSlug, order, tilesReady, selectMolecule, clearHover, refreshStatus]);
 
   useEffect(() => {
     const plot = plotRef.current;
@@ -497,14 +541,19 @@ export function DeepscatterView({ onBack }: DeepscatterViewProps) {
         encoding: {}
       })
       .then(() => {
-        setStatus(
-          `${activeDataset?.name ?? datasetSlug} · ${order} · max_points=${maxPoints.toLocaleString()}`
-        );
+        refreshStatus();
       })
       .catch((e) => {
         console.warn('Deepscatter update failed', e);
       });
-  }, [maxPoints, pointSize, plotReady, activeDataset?.name, datasetSlug, order]);
+  }, [maxPoints, pointSize, plotReady, activeDataset?.name, datasetSlug, order, refreshStatus]);
+
+  // Keep live≈… current while tiles stream in after zoom / LOD changes.
+  useEffect(() => {
+    if (!plotReady) return;
+    const id = window.setInterval(refreshStatus, 750);
+    return () => window.clearInterval(id);
+  }, [plotReady, refreshStatus]);
 
   const selectStyle: CSSProperties = {
     padding: '4px 8px',

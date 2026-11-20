@@ -29,5 +29,7 @@ declare module 'deepscatter' {
     /** Called on mouse move with the point under the cursor, or [] if there is none. */
     highlit_point_change: ((points: Record<string, unknown>[]) => void) | string;
     on_zoom?: (transform: unknown) => void;
+    /** Internal renderer; exposes live ``max_ix`` draw budget. */
+    _renderer?: { max_ix?: number };
   }
 }
