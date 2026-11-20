@@ -653,8 +653,8 @@ export function DeepscatterView({ onBack }: DeepscatterViewProps) {
             onChange={(e) => setLodLevel(clampLodLevel(Number(e.target.value)))}
             {...stopMapGesture}
           />
-          <span style={{ width: 88, textAlign: 'right' }}>
-            {lodLevel}/{LOD_STEP_COUNT} {lodLabel}
+          <span style={{ width: 140, textAlign: 'right', fontSize: 12 }}>
+            {lodLevel}/{LOD_STEP_COUNT} {lodLabel} ({maxPoints.toLocaleString()})
           </span>
         </label>
 
