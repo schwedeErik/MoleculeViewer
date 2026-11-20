@@ -3,8 +3,8 @@
   "order": "ranked",
   "seed": null,
   "tile_size": 50000,
-  "include_smiles": false,
-  "built_at": "2026-09-24T13:31:43.316017+00:00",
+  "include_smiles": true,
+  "built_at": "2026-11-20T16:25:07.631935+00:00",
   "count": 1358976,
   "max_rank": 1358976,
   "bounds": {
@@ -17,7 +17,8 @@
     "x",
     "y",
     "id",
-    "rank"
+    "rank",
+    "smiles"
   ],
   "source_url_path": "/deepscatter/chembl13m/ranked",
   "notes": "Deepscatter LOD follows file row order: ranked = low rank first; shuffled = same points, random order (RQ1 ablation)."

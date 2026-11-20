@@ -8,6 +8,7 @@ import {
   labelForLodLevel,
   maxPointsForLodLevel
 } from './deepscatterLod';
+import { SmilesStructure } from './SmilesStructure';
 import { useAppStore } from './store';
 import type { DatasetInfo } from './types';
 
@@ -32,6 +33,7 @@ type HoverInfo = {
   rank: number;
   x: number;
   y: number;
+  smiles: string | null;
 };
 
 /** The pointer must rest on a point this long before the tooltip is shown. */
@@ -56,7 +58,7 @@ function structureSvgUrl(slug: string, moleculeId: number, width: number, height
   );
 }
 
-/** Hover tooltip; shows RDKit SVG when a backend is available, otherwise rank/id. */
+/** Hover tooltip: RDKit SVG from backend, or client-side SmilesDrawer when tiles include SMILES. */
 function MoleculeTooltip({
   hover,
   structureUrl,
@@ -69,9 +71,10 @@ function MoleculeTooltip({
   areaHeight: number;
 }) {
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
-  const showImage = Boolean(structureUrl);
-  const boxH = showImage ? TOOLTIP_H : TOOLTIP_TEXT_H;
-  const boxW = showImage ? TOOLTIP_W : 160;
+  const smiles = hover.smiles?.trim() || null;
+  const showStructure = Boolean(structureUrl || smiles);
+  const boxH = showStructure ? TOOLTIP_H : TOOLTIP_TEXT_H;
+  const boxW = showStructure ? TOOLTIP_W : 160;
 
   let left = hover.x + TOOLTIP_OFFSET;
   if (left + boxW > areaWidth) left = hover.x - TOOLTIP_OFFSET - boxW;
@@ -97,7 +100,7 @@ function MoleculeTooltip({
         pointerEvents: 'none'
       }}
     >
-      {showImage && structureUrl && (
+      {showStructure && (
         <div
           style={{
             width: TOOLTIP_IMG_W,
@@ -108,24 +111,33 @@ function MoleculeTooltip({
             color: '#888'
           }}
         >
-          {state === 'error' ? (
-            <span>No structure available</span>
-          ) : (
-            <img
-              src={structureUrl}
+          {structureUrl ? (
+            state === 'error' ? (
+              <span>No structure available</span>
+            ) : (
+              <img
+                src={structureUrl}
+                width={TOOLTIP_IMG_W}
+                height={TOOLTIP_IMG_H}
+                alt={`Structure of molecule ${hover.id}`}
+                style={{ display: 'block', opacity: state === 'ready' ? 1 : 0 }}
+                onLoad={() => setState('ready')}
+                onError={() => setState('error')}
+              />
+            )
+          ) : smiles ? (
+            <SmilesStructure
+              smiles={smiles}
               width={TOOLTIP_IMG_W}
               height={TOOLTIP_IMG_H}
               alt={`Structure of molecule ${hover.id}`}
-              style={{ display: 'block', opacity: state === 'ready' ? 1 : 0 }}
-              onLoad={() => setState('ready')}
-              onError={() => setState('error')}
             />
-          )}
+          ) : null}
         </div>
       )}
       <div
         style={{
-          marginTop: showImage ? 4 : 0,
+          marginTop: showStructure ? 4 : 0,
           display: 'flex',
           justifyContent: 'space-between',
           gap: 8
@@ -428,7 +440,13 @@ export function DeepscatterView({ onBack }: DeepscatterViewProps) {
           const { x, y } = pointerRef.current;
           hoverTimerRef.current = window.setTimeout(() => {
             hoverTimerRef.current = null;
-            setHover({ id, rank: highlitRef.current?.rank ?? 0, x, y });
+            setHover({
+              id,
+              rank: highlitRef.current?.rank ?? 0,
+              x,
+              y,
+              smiles: highlitRef.current?.smiles ?? null
+            });
           }, HOVER_DELAY_MS);
         };
 
@@ -742,7 +760,7 @@ python -m scripts.build_deepscatter_tiles --dataset ${datasetSlug ?? 'zinc10k'} 
                 Close
               </button>
             </div>
-            {selectedStructureUrl && (
+            {selectedStructureUrl ? (
               <img
                 key={selected.id}
                 src={selectedStructureUrl}
@@ -759,7 +777,24 @@ python -m scripts.build_deepscatter_tiles --dataset ${datasetSlug ?? 'zinc10k'} 
                   borderRadius: 6
                 }}
               />
-            )}
+            ) : selected.smiles ? (
+              <div
+                style={{
+                  marginTop: 8,
+                  border: '1px solid #eee',
+                  borderRadius: 6,
+                  overflow: 'hidden'
+                }}
+              >
+                <SmilesStructure
+                  key={selected.id}
+                  smiles={selected.smiles}
+                  width={DETAIL_IMG_W}
+                  height={DETAIL_IMG_H}
+                  alt={`Structure of molecule ${selected.id}`}
+                />
+              </div>
+            ) : null}
             <div style={{ marginTop: 8, lineHeight: 1.45 }}>
               <div>
                 <strong>rank:</strong> {selected.rank.toLocaleString()}
@@ -777,9 +812,9 @@ python -m scripts.build_deepscatter_tiles --dataset ${datasetSlug ?? 'zinc10k'} 
                   <strong>SMILES:</strong> {selected.smiles}
                 </div>
               )}
-              {isStatic && !selected.smiles && (
+              {!selectedStructureUrl && !selected.smiles && (
                 <div style={{ marginTop: 6, color: '#666', fontSize: 12 }}>
-                  Structure depiction requires the backend app.
+                  No SMILES in these tiles — rebuild with --include-smiles for structure hover.
                 </div>
               )}
             </div>
