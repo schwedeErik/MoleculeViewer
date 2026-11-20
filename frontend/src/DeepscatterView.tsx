@@ -614,7 +614,7 @@ export function DeepscatterView({ onBack }: DeepscatterViewProps) {
           <input
             type="range"
             min={0.25}
-            max={10}
+            max={2}
             step={0.25}
             value={pointSize}
             onChange={(e) => setPointSize(Number(e.target.value))}
