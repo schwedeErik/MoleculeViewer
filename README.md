@@ -2,12 +2,30 @@
 
 A “Google Maps for molecules” viewer:
 
-- **DB**: PostgreSQL + **PostGIS** + **pgvector** (metadata + click details; optional live MVT)
-- **Tiles**: **quadfeather** trees served statically; **Deepscatter** renders millions of points
-- **LOD**: importance encoded as **file row order** (rank-sorted before tiling), not runtime `rank_max`
-- **Legacy**: deck.gl + PostGIS/PMTiles MVT still available from the map toolbar
+- **Tiles**: **quadfeather** trees; **Deepscatter** renders millions of points
+- **LOD**: importance encoded as **file row order** (rank-sorted before tiling)
+- **Full stack**: PostgreSQL + PostGIS + FastAPI for dataset import, click details, and RDKit structure SVGs
+- **Static demo**: GitHub Pages build on branch `static-gh-pages` (Deepscatter only, no backend / no MVT)
 
-## Quick start
+## GitHub Pages (static)
+
+Branch `static-gh-pages` ships a backend-free Deepscatter demo with bundled `zinc10k` tiles under `frontend/public/deepscatter/`.
+
+```bash
+cd frontend
+npm install --legacy-peer-deps
+npm run build:pages          # base = /MoleculeViewer/
+# or local preview without repo subpath:
+npm run dev:static
+```
+
+Deploy: push `static-gh-pages`, enable **Settings → Pages → Source: GitHub Actions**. The workflow `.github/workflows/github-pages.yml` builds and publishes `frontend/dist`. Site URL: `https://<user>.github.io/MoleculeViewer/`.
+
+Override the Vite base for a user/org site root with `VITE_BASE=/`.
+
+Structure hover/detail SVGs need the FastAPI + RDKit backend; the static build shows rank/id only.
+
+## Quick start (full stack)
 
 ### 1) Start database
 

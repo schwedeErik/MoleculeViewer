@@ -5,8 +5,6 @@ export type DatasetInfo = {
   embedding_method: string;
   embedding_dim: number;
   molecule_count: number;
-  /** LOD steps 1–6 that have a precomputed PMTiles archive. */
-  precomputed_lods?: number[];
   /** Deepscatter tile trees available: ``ranked`` and/or ``shuffled``. */
   deepscatter_orders?: Array<'ranked' | 'shuffled'>;
 };

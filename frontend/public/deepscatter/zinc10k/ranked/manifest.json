@@ -1,0 +1,24 @@
+{
+  "slug": "zinc10k",
+  "order": "ranked",
+  "seed": null,
+  "tile_size": 5000,
+  "include_smiles": false,
+  "built_at": "2026-09-24T13:21:06.280992+00:00",
+  "count": 10000,
+  "max_rank": 10000,
+  "bounds": {
+    "min_x": -14.940193176269531,
+    "max_x": 7.18587589263916,
+    "min_y": -8.62797737121582,
+    "max_y": 3.1288843154907227
+  },
+  "columns": [
+    "x",
+    "y",
+    "id",
+    "rank"
+  ],
+  "source_url_path": "/deepscatter/zinc10k/ranked",
+  "notes": "Deepscatter LOD follows file row order: ranked = low rank first; shuffled = same points, random order (RQ1 ablation)."
+}

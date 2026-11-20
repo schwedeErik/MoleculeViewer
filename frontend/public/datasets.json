@@ -1,0 +1,11 @@
+[
+  {
+    "id": 1,
+    "slug": "zinc10k",
+    "name": "ZINC 10k",
+    "embedding_method": "maccs",
+    "embedding_dim": 167,
+    "molecule_count": 10000,
+    "deepscatter_orders": ["ranked", "shuffled"]
+  }
+]

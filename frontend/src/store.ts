@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import { DEFAULT_LOD_LEVEL } from './rankLod';
+import { apiBase } from './config';
+import { DEFAULT_LOD_LEVEL } from './deepscatterLod';
 
 type ViewState = {
   longitude: number;
@@ -21,7 +22,7 @@ type AppState = {
 };
 
 export const useAppStore = create<AppState>((set) => ({
-  apiBase: import.meta.env.VITE_API_BASE ?? '/api',
+  apiBase,
   datasetSlug: null,
   lodLevel: DEFAULT_LOD_LEVEL,
   viewState: {
