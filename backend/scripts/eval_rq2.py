@@ -37,6 +37,7 @@ DEFAULT_DATASETS = ("zinc10k", "zinc250k", "chembl13m")
 LOD_LEVEL = 3
 DEEPSCATTER_ORDER = "ranked"
 REPEATS = 3
+OVERVIEW_MAX_DEPTH = 2  # quadtree levels fetched for the cold overview (root = 0)
 
 
 def repo_root() -> Path:
@@ -120,9 +121,14 @@ def measure_offline(datasets: tuple[str, ...]) -> list[dict]:
 def list_deepscatter_files(slug: str) -> list[str]:
     """Relative paths under the deepscatter tree to fetch for a cold overview.
 
-    Quadfeather tiles live at paths like ``0/0/0.feather`` (depth 2). We fetch
-    manifests plus all feathers with depth ≤ 2 (root + first two quad levels),
-    which approximates an overview load before deep zoom.
+    Quadfeather tiles live at ``z/x/y.feather``, where ``z`` is the quadtree
+    depth (``0/0/0.feather`` is the root). We fetch manifests plus all feathers
+    with ``z <= OVERVIEW_MAX_DEPTH`` (root + first two quad levels), which
+    approximates an overview load before deep zoom.
+
+    Note: an earlier version derived the depth from ``rel.count("/")``, which is
+    2 for every ``z/x/y`` path, so it fetched the complete tree. The RQ2 numbers
+    reported in the thesis were produced by that version.
     """
     root = deepscatter_dir(slug)
     if not root.is_dir():
@@ -136,8 +142,11 @@ def list_deepscatter_files(slug: str) -> list[str]:
         rel = p.relative_to(root).as_posix()
         if rel in files:
             continue
-        depth = rel.count("/")
-        if depth <= 2:
+        parts = rel.split("/")
+        if len(parts) != 3 or not parts[0].isdigit():
+            continue  # not a z/x/y tile (e.g. a sidecar or manifest)
+        depth = int(parts[0])
+        if depth <= OVERVIEW_MAX_DEPTH:
             feathers.append((depth, rel))
     feathers.sort()
     files.extend(rel for _, rel in feathers)
