@@ -5,7 +5,7 @@ Run from backend/ (no RDKit needed — uses synthetic 2D points):
     pip install matplotlib numpy scikit-learn
     python scripts/visualize_ranking.py
 
-Writes: scripts/ranking_algorithm_explainer.png
+Writes: docs/ranking_algorithm_explainer.png
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.cluster import KMeans
 
-OUT = Path(__file__).resolve().parent / "ranking_algorithm_explainer.png"
+OUT = Path(__file__).resolve().parents[2] / "docs" / "ranking_algorithm_explainer.png"
 
 # Marker sizes (matplotlib scatter `s` is area in points² — keep these small)
 BG_PT = 8
