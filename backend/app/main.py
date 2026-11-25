@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy import text
 
 from .datasets import delete_dataset, list_datasets, resolve_dataset_id, validate_slug
 from .db import engine
-from .molecules_pb2 import Points
 from .services import deepscatter_tiles, structure_svg
+from .services import deepscatter_catalog, deepscatter_import, import_jobs
 from .services.smiles_database import import_dataset_from_csv
 from .services.tile_cache import available_lod_levels, pmtiles_path, read_manifest, tile_cache_root
 from .services.rank_lod import clamp_lod_level
@@ -37,9 +37,29 @@ def health() -> dict:
 def datasets() -> list[dict]:
     with engine.connect() as conn:
         rows = list_datasets(conn)
+    by_slug = {row["slug"]: row for row in rows}
     for row in rows:
         row["precomputed_lods"] = available_lod_levels(row["slug"])
         row["deepscatter_orders"] = deepscatter_tiles.available_orders(row["slug"])
+        row.setdefault("deepscatter_only", False)
+
+    # Deepscatter-only uploads (no Postgres molecule rows).
+    for entry in deepscatter_catalog.list_entries():
+        slug = entry["slug"]
+        if slug in by_slug:
+            by_slug[slug]["deepscatter_only"] = True
+            if entry.get("molecule_count"):
+                by_slug[slug]["molecule_count"] = entry["molecule_count"]
+            by_slug[slug]["deepscatter_orders"] = deepscatter_tiles.available_orders(slug)
+            continue
+        entry = dict(entry)
+        entry["precomputed_lods"] = entry.get("precomputed_lods") or []
+        entry["deepscatter_orders"] = deepscatter_tiles.available_orders(slug)
+        entry["deepscatter_only"] = True
+        rows.append(entry)
+        by_slug[slug] = entry
+
+    rows.sort(key=lambda r: (r.get("name") or r.get("slug") or "").lower())
     return rows
 
 
@@ -180,53 +200,217 @@ def dataset_tiles_manifest(slug: str) -> dict:
     }
 
 
+def _run_deepscatter_job(
+    job_id: str,
+    csv_path,
+    *,
+    slug: str,
+    name: str,
+    embedding_method: str,
+) -> None:
+    progress_cb = import_jobs.make_progress_cb(job_id)
+    try:
+        import_jobs.update_job(job_id, status="running", phase="export", progress=5, message="Starting…")
+        created = deepscatter_import.build_deepscatter_from_csv(
+            csv_path,
+            slug=slug,
+            name=name,
+            embedding_method=embedding_method,
+            include_smiles=True,
+            build_shuffled=False,
+            progress_cb=progress_cb,
+        )
+        created["precomputed_lods"] = []
+        created["deepscatter_orders"] = deepscatter_tiles.available_orders(slug)
+        created["deepscatter_only"] = True
+        import_jobs.update_job(
+            job_id,
+            status="done",
+            phase="done",
+            progress=100,
+            message="Done",
+            dataset=created,
+        )
+    except Exception as exc:
+        import_jobs.update_job(
+            job_id,
+            status="error",
+            phase="error",
+            progress=100,
+            message=str(exc),
+            error=str(exc),
+        )
+
+
+def _run_full_import_job(
+    job_id: str,
+    csv_path,
+    *,
+    slug: str,
+    name: str,
+    embedding_method: str,
+) -> None:
+    try:
+        import_jobs.update_job(
+            job_id,
+            status="running",
+            phase="import",
+            progress=15,
+            message="Loading CSV into Postgres…",
+        )
+        with csv_path.open(newline="", encoding="utf-8") as f:
+            import_dataset_from_csv(
+                f,
+                slug=slug,
+                name=name,
+                embedding_method=embedding_method,
+            )
+        import_jobs.update_job(
+            job_id,
+            status="running",
+            phase="finalize",
+            progress=90,
+            message="Finalizing…",
+        )
+        with engine.connect() as conn:
+            rows = list_datasets(conn)
+        created = next((row for row in rows if row["slug"] == slug), None)
+        if not created:
+            raise RuntimeError("Dataset imported but not found")
+        created["precomputed_lods"] = available_lod_levels(slug)
+        created["deepscatter_orders"] = deepscatter_tiles.available_orders(slug)
+        created["deepscatter_only"] = False
+        import_jobs.update_job(
+            job_id,
+            status="done",
+            phase="done",
+            progress=100,
+            message="Done",
+            dataset=created,
+        )
+    except Exception as exc:
+        import_jobs.update_job(
+            job_id,
+            status="error",
+            phase="error",
+            progress=100,
+            message=str(exc),
+            error=str(exc),
+        )
+
+
+@app.get("/datasets/jobs/{job_id}")
+def dataset_job_status(job_id: str) -> dict:
+    job = import_jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown import job")
+    return job
+
+
 @app.post("/datasets")
 async def create_dataset(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     slug: str = Form(...),
     name: str = Form(...),
     embedding_method: str = Form("maccs"),
+    # ``deepscatter`` = tiles only (skip Postgres / deck.gl). ``full`` = legacy DB import.
+    renderer: str = Form("deepscatter"),
 ) -> dict:
-    """Import a pipeline CSV (smiles, rank, lng, lat, embedding) as a new dataset."""
+    """Start a dataset import job.
+
+    Returns a ``job_id`` immediately after the CSV is saved. Poll
+    ``GET /datasets/jobs/{job_id}`` for progress until ``status`` is ``done`` or ``error``.
+    """
     validate_slug(slug.strip())
     if not name.strip():
         raise HTTPException(status_code=400, detail="Name is required")
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Upload a .csv file")
+    mode = (renderer or "deepscatter").strip().lower()
+    if mode not in {"deepscatter", "full"}:
+        raise HTTPException(status_code=400, detail="renderer must be 'deepscatter' or 'full'")
+
+    slug_s = slug.strip()
+    name_s = name.strip()
+    method = embedding_method.strip() or "maccs"
 
     try:
-        import io
-
-        text_stream = io.TextIOWrapper(file.file, encoding="utf-8", newline="")
-        count = import_dataset_from_csv(
-            text_stream,
-            slug=slug.strip(),
-            name=name.strip(),
-            embedding_method=embedding_method.strip() or "maccs",
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        csv_path = deepscatter_import.save_upload(slug_s, file)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Import failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"Failed to save upload: {exc}") from exc
 
-    with engine.connect() as conn:
-        rows = list_datasets(conn)
-    created = next((row for row in rows if row["slug"] == slug.strip()), None)
-    if not created:
-        raise HTTPException(status_code=500, detail="Dataset imported but not found")
-    return created
+    job_id = import_jobs.create_job(slug=slug_s, name=name_s, renderer=mode)
+    import_jobs.update_job(
+        job_id,
+        status="running",
+        phase="upload",
+        progress=8,
+        message="CSV saved — starting import…",
+    )
+
+    if mode == "deepscatter":
+        background_tasks.add_task(
+            _run_deepscatter_job,
+            job_id,
+            csv_path,
+            slug=slug_s,
+            name=name_s,
+            embedding_method=method,
+        )
+    else:
+        background_tasks.add_task(
+            _run_full_import_job,
+            job_id,
+            csv_path,
+            slug=slug_s,
+            name=name_s,
+            embedding_method=method,
+        )
+
+    return {
+        "job_id": job_id,
+        "status": "running",
+        "slug": slug_s,
+        "name": name_s,
+        "renderer": mode,
+        "progress": 8,
+        "message": "CSV saved — starting import…",
+    }
 
 
 @app.delete("/datasets/{slug}")
 def remove_dataset(slug: str) -> dict:
-    """Delete a dataset and all of its molecules."""
-    with engine.connect() as conn:
-        delete_dataset(conn, slug)
+    """Delete a dataset (Postgres rows and/or Deepscatter-only tiles)."""
+    validate_slug(slug)
+    deepscatter_import.delete_deepscatter_dataset(slug)
+    try:
+        with engine.connect() as conn:
+            delete_dataset(conn, slug)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
     return {"ok": True, "slug": slug}
 
 
 @app.get("/bounds")
 def bounds(dataset: str = Query(..., min_length=1)) -> dict:
+    # Deepscatter-only datasets: bounds live in the tile manifest.
+    manifest = deepscatter_tiles.read_manifest(dataset, "ranked") or deepscatter_tiles.read_manifest(
+        dataset, "shuffled"
+    )
+    if manifest and manifest.get("bounds"):
+        b = manifest["bounds"]
+        return {
+            "min_lng": b["min_x"],
+            "max_lng": b["max_x"],
+            "min_lat": b["min_y"],
+            "max_lat": b["max_y"],
+            "min_rank": 1,
+            "max_rank": manifest.get("max_rank") or manifest.get("count") or 1,
+            "count": manifest.get("count") or 0,
+        }
+
     sql = text(
         """
         SELECT
@@ -302,55 +486,4 @@ def tile(
         content=bytes(tile_bytes),
         media_type="application/vnd.mapbox-vector-tile",
         headers={"Cache-Control": "public, max-age=60"},
-    )
-
-
-@app.get("/points.pb")
-def points(
-    minLng: float,
-    minLat: float,
-    maxLng: float,
-    maxLat: float,
-    dataset: str = Query(..., min_length=1),
-    limit: int = Query(1000, ge=1, le=200_000),
-) -> Response:
-    """Return the top-``limit`` molecules by rank inside the viewport bbox."""
-    sql = text(
-        """
-        SELECT
-          id,
-          rank,
-          ST_X(geom) AS lng,
-          ST_Y(geom) AS lat
-        FROM molecule_map
-        WHERE dataset_id = :dataset_id
-          AND geom && ST_MakeEnvelope(:minLng, :minLat, :maxLng, :maxLat, 4326)
-        ORDER BY rank ASC, id ASC
-        LIMIT :limit;
-        """
-    )
-    out = Points()
-    with engine.connect() as conn:
-        dataset_id = resolve_dataset_id(conn, dataset)
-        for row in conn.execute(
-            sql,
-            {
-                "dataset_id": dataset_id,
-                "minLng": minLng,
-                "minLat": minLat,
-                "maxLng": maxLng,
-                "maxLat": maxLat,
-                "limit": limit,
-            },
-        ):
-            p = out.points.add()
-            p.id = int(row.id)
-            p.lng = float(row.lng)
-            p.lat = float(row.lat)
-            p.rank = int(row.rank)
-
-    return Response(
-        content=out.SerializeToString(),
-        media_type="application/x-protobuf",
-        headers={"Cache-Control": "no-store"},
     )

@@ -15,6 +15,8 @@ import type { DatasetInfo } from './types';
 
 export type DeepscatterViewProps = {
   onBack: () => void;
+  /** Switch to legacy deck.gl MVT viewer (full stack only; kept for comparison). */
+  onOpenLegacyMvt?: () => void;
 };
 
 type MoleculeDetail = {
@@ -170,7 +172,7 @@ function MoleculeTooltip({
   );
 }
 
-export function DeepscatterView({ onBack }: DeepscatterViewProps) {
+export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProps) {
   const datasetSlug = useAppStore((s) => s.datasetSlug);
   const setDatasetSlug = useAppStore((s) => s.setDatasetSlug);
 
@@ -676,6 +678,12 @@ export function DeepscatterView({ onBack }: DeepscatterViewProps) {
             {pointSize}
           </span>
         </label>
+
+        {onOpenLegacyMvt && !isStatic && (
+          <button type="button" style={btnStyle} onClick={onOpenLegacyMvt}>
+            Legacy MVT
+          </button>
+        )}
 
         <div style={{ marginLeft: 'auto', color: '#666', fontSize: 12 }}>{status}</div>
       </div>

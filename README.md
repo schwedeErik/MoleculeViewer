@@ -1,63 +1,70 @@
-# Molecule Map (PostGIS + pgvector + FastAPI + Deepscatter)
+# ChemMaps
 
-A “Google Maps for molecules” viewer:
+**Interactive, zoomable maps of large chemical libraries in the browser.**
 
-- **Tiles**: **quadfeather** trees; **Deepscatter** renders millions of points
-- **LOD**: importance encoded as **file row order** (rank-sorted before tiling)
-- **Full stack**: PostgreSQL + PostGIS + FastAPI for dataset import, click details, and RDKit structure SVGs
-- **Static demo**: GitHub Pages build on branch `static-gh-pages` (Deepscatter only, no backend / no MVT)
+ChemMaps is the software for the Master's thesis *"ChemMaps: Real-Time Interactive Exploration of Large-Scale Chemical Spaces"* (RPTU Kaiserslautern-Landau, 2026). It works in two stages:
 
-## GitHub Pages (static)
+- **Offline pipeline.** Turns a list of SMILES strings into a map:
+  1. computes a fingerprint for each molecule (MACCS or Morgan),
+  2. gives every molecule a unique importance rank using farthest-point sampling,
+  3. projects the molecules to 2D with UMAP,
+  4. writes the result as a tile tree.
+- **Web explorer.** Renders the map with [Deepscatter](https://github.com/nomic-ai/deepscatter):
+  - Coarse zoom levels show the best-ranked molecules.
+  - Zooming in or raising the level-of-detail (LOD) slider adds more.
+  - Clicking a molecule shows its structure.
 
-Branch `static-gh-pages` ships a backend-free Deepscatter demo with bundled `zinc10k` tiles under `frontend/public/deepscatter/`.
+## Try it now: https://chemmaps.de
 
-```bash
-cd frontend
-npm install --legacy-peer-deps
-npm run build:pages          # base = /MoleculeViewer/
-# or local preview without repo subpath:
-npm run dev:static
+The static demo at **[chemmaps.de](https://chemmaps.de)** runs entirely in the browser. You don't need to install anything.
+
+- **Datasets:** ChEMBL (~1.36 M molecules) and ZINC 250k.
+- **Ranked vs. shuffled:** each dataset comes in two row orders. **Ranked** is the importance order. **Shuffled** is the random baseline from the thesis. Switching between them shows the effect of the ranking.
+- **Controls:** pan and zoom, the LOD slider (point budget), point size, and hover/click for structure details. Structures are drawn client-side from SMILES.
+- **Not included:** the demo has no backend, so you can't upload datasets and the legacy deck.gl/MVT viewer isn't available. For those, run the full stack locally (below).
+
+The demo runs the same frontend code as `main` in static mode, with the tiles bundled in. See [Static build](#static-build-chemmapsde).
+
+---
+
+## Repository layout
+
+```
+backend/
+  app/                FastAPI service (datasets, tiles, molecule details, uploads)
+    services/         pipeline code: featurization, ranking, UMAP, export, tiling
+  scripts/            command-line tools: dataset build, tile build, evaluation
+frontend/             React + Vite + TypeScript explorer (Deepscatter, legacy deck.gl view)
+db/
+  init/               schema applied automatically on first `docker compose up`
+  migrations/         upgrades for databases created by older versions
+data/                 generated data (tiles, CSVs, caches are gitignored)
+  eval_rq1*/, eval_rq2/   evaluation results used in the thesis (tables, figures)
+docs/                 ranking algorithm notes and slides
+docker-compose.yml    PostgreSQL + PostGIS + pgvector
 ```
 
-Deploy: push `static-gh-pages`, enable **Settings → Pages → Source: GitHub Actions**. The workflow builds `frontend/dist` with base `/` for the custom domain.
+## Requirements
 
-**Custom domain `chemmaps.de`:** `frontend/public/CNAME` is included in the build. In repo **Settings → Pages → Custom domain**, set `chemmaps.de` and enable **Enforce HTTPS** after DNS works. At Namecheap (Advanced DNS):
+- Docker (for the database)
+- Python 3.12
+- Node.js 20+
+- Optional: an NVIDIA GPU with RAPIDS cuML. UMAP falls back to CPU `umap-learn`, which is slow for more than a few hundred thousand molecules.
 
-| Type | Host | Value |
-|------|------|-------|
-| A | `@` | `185.199.108.153` |
-| A | `@` | `185.199.109.153` |
-| A | `@` | `185.199.110.153` |
-| A | `@` | `185.199.111.153` |
-| CNAME | `www` | `schwedeErik.github.io` |
+---
 
-Remove Namecheap parking/URL-redirect records that conflict. DNS can take minutes to hours; then https://chemmaps.de/
+## Run locally (full stack)
 
-Structure hover/detail SVGs need the FastAPI + RDKit backend; the static build shows rank/id only.
-
-## Quick start (full stack)
-
-### 1) Start database
+### 1. Start the database
 
 ```bash
 docker compose up -d db
-```
-
-This creates `datasets`, `molecule_map`, and `molecule_details` from `db/init/010_schema.sql`. A synthetic seed (`020_seed.sql`) may also load on first start; skip or truncate it when loading a real dataset (see below).
-
-Existing databases created before the map/details split: run:
-
-```bash
-psql "$DATABASE_URL" -f db/init/040_map_details.sql
-```
-
-Default connection:
-
-```bash
 export DATABASE_URL="postgresql://app:app@localhost:5432/molecules"
 ```
 
-### 2) Run backend (dev)
+On first start, `db/init/` creates the `datasets`, `molecule_map`, and `molecule_details` tables. The credentials `app:app` are for local development only.
+
+### 2. Start the backend
 
 ```bash
 cd backend
@@ -67,30 +74,9 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-Health check: `http://localhost:8000/health`
+Health check: <http://localhost:8000/health>. The backend reads `DATABASE_URL`; the default is the value above.
 
-### 3) Build Deepscatter tiles
-
-After a dataset is in Postgres (e.g. `zinc10k`):
-
-```bash
-cd backend
-source .venv/bin/activate
-python -m scripts.build_deepscatter_tiles --dataset zinc10k
-# RQ1 ablation (same coords, shuffled file order):
-python -m scripts.build_deepscatter_tiles --dataset zinc10k --order shuffled
-```
-
-Or from a pipeline CSV (`smiles,rank,lng,lat,…`):
-
-```bash
-python -m scripts.build_deepscatter_tiles --csv ../data/molecules_10k.csv --slug zinc10k
-```
-
-Outputs under `data/deepscatter/<slug>/{ranked|shuffled}/` (gitignored).
-Tiles are served at `/deepscatter/<slug>/<order>/…`.
-
-### 4) Run frontend (dev)
+### 3. Start the frontend
 
 ```bash
 cd frontend
@@ -98,193 +84,186 @@ npm install --legacy-peer-deps
 npm run dev
 ```
 
-Open the URL Vite prints (usually `http://localhost:5173`). Choose a dataset and
-**Open Deepscatter map**. Use **Legacy MVT** in the toolbar for the old deck.gl viewer.
+Open <http://localhost:5173>. Vite forwards `/api/*` to the backend on port 8000.
+
+The map is empty until a dataset exists. To add one, either upload a pipeline CSV in the UI, or build one as described in the next section.
 
 ---
 
-## Building a dataset
+## Build a dataset
 
-The map needs molecules with:
+### Step 1: Run the pipeline (SMILES → ranked 2D map)
 
-| Field | Table | Meaning |
-|-------|--------|---------|
-| `rank` | `molecule_map` | Global importance rank (`1` = best, unique per dataset) |
-| `geom` | `molecule_map` | PostGIS point from 2D UMAP coordinates (`lng`, `lat`) |
-| `smiles` | `molecule_details` | SMILES string |
-| `embedding` | `molecule_details` | Fingerprint vector (pgvector) used for ranking / search |
-
-The build pipeline:
-
-1. Download SMILES from HuggingFace
-2. Embed (MACCS or Morgan fingerprints via RDKit)
-3. Rank by representativeness (`app/services/smiles_ranking.py`)
-4. Project to 2D with UMAP (GPU via cuML when available)
-5. Export **`molecules.csv`** + **`molecules_load.sql`** for PostgreSQL
-6. **New:** `python -m scripts.build_deepscatter_tiles --dataset <slug>` → quadfeather tiles
-
-Code lives in `backend/app/services/` and is driven by `backend/scripts/build_map_dataset.py`.
-
-### Option A — Google Colab (GPU)
-
-Notebook: [`backend/scripts/build_map_dataset_colab.ipynb`](backend/scripts/build_map_dataset_colab.ipynb)
-
-1. **Runtime → Change runtime type → GPU** (T4 is enough).
-2. Run the install cell (`datasets`, `rdkit`, `umap-learn`, `cuml-cu12`, …).
-3. Upload a zip of the `backend/` folder (or clone from GitHub once the repo is available).
-4. Set config in the notebook, e.g.:
-
-   ```python
-   REPO_ID = "edmanft/zinc250k"
-   COLUMN = "smiles"
-   LIMIT = 250_000        # start with 10_000 to test
-   METHOD = "maccs"       # maccs | morgan
-   METRIC = "euclidean"
-   ```
-
-5. Run the pipeline cell, then download `out/molecules.csv` and `out/molecules_load.sql`.
-
-Colab has no direct DB access; copy the files to your machine and load with `psql` (see below).
-
-### Option B — HPC / Slurm cluster (GPU)
-
-For larger runs (250k–10M molecules), use the cluster job script.
-
-**One-time environment** (from `backend/`):
+The pipeline downloads SMILES from Hugging Face, computes fingerprints, ranks, and projects. It writes a CSV and a matching SQL loader script.
 
 ```bash
-bash scripts/setup_conda_env.sh
-# If the cluster uses CUDA 11.8:
-CUDA_VERSION=11.8 bash scripts/setup_conda_env.sh
-
-conda activate molmap-build
-```
-
-Or: `conda env create -f scripts/environment.yml`
-
-**Configure and submit** — edit `backend/scripts/build_map_dataset.slurm`:
-
-- Uncomment the `conda activate molmap-build` block
-- Uncomment the `#SBATCH --gres=…` line that matches your cluster (`sinfo -o "%P %G"`)
-
-Submit:
-
-```bash
-cd backend
-sbatch scripts/build_map_dataset.slurm
-```
-
-Override defaults via environment variables:
-
-```bash
-REPO_ID=edmanft/zinc250k LIMIT=1000000 METHOD=maccs OUT_DIR=./out sbatch scripts/build_map_dataset.slurm
-```
-
-**Or run directly** on a GPU node (no Slurm):
-
-```bash
-cd backend
-conda activate molmap-build
-
+cd backend && source .venv/bin/activate
 python -m scripts.build_map_dataset \
-  --repo-id edmanft/zinc250k \
-  --column smiles \
-  --limit 250000 \
-  --method maccs \
-  --metric euclidean \
-  --out-dir ./out \
-  --name molecules
+  --repo-id edmanft/zinc250k --column smiles --limit 250000 \
+  --method maccs --metric euclidean \
+  --out-dir ./out --name zinc250k --dataset-slug zinc250k --dataset-name "ZINC 250k"
 ```
 
-Output:
+The options above (`--method maccs --metric euclidean`) and the defaults of `--n-neighbors 15` and `--min-dist 0.1` are the settings used in the thesis.
 
-- `out/molecules.csv`
-- `out/molecules_load.sql`
+How ranking works:
 
-Copy both files to the machine where Postgres runs.
+- **Up to 50,000 molecules:** exact farthest-point sampling.
+- **Larger libraries:** a hierarchical approximation. Details are in [`docs/ranking_algorithm_presentation.md`](docs/ranking_algorithm_presentation.md) and `backend/app/services/smiles_ranking.py`.
 
-### Embedding method vs schema
+For large libraries, run the pipeline on a GPU machine:
 
-`db/init/010_schema.sql` sets `embedding vector(167)` for **MACCS** (default). If you use another method, change the dimension before loading:
+- **Google Colab:** use [`backend/scripts/build_map_dataset_colab.ipynb`](backend/scripts/build_map_dataset_colab.ipynb) on a GPU runtime. Afterwards, download `out/*.csv` and `out/*_load.sql`.
+- **Slurm cluster:**
+  1. Set up the environment once with `bash scripts/setup_conda_env.sh`, then `conda activate molmap-build`.
+  2. Edit `scripts/build_map_dataset.slurm`.
+  3. Submit it with variables, for example `REPO_ID=edmanft/zinc250k LIMIT=250000 sbatch scripts/build_map_dataset.slurm`.
 
-| Method | Dimension |
-|--------|-----------|
-| `maccs` | 167 |
-| `morgan` | 2048 |
-| `chembert` | 768 (not implemented in the pipeline yet) |
+### Step 2: Load into PostgreSQL
+
+```bash
+psql "$DATABASE_URL" -f backend/out/zinc250k_load.sql
+psql "$DATABASE_URL" -c "SELECT d.slug, COUNT(*) FROM molecule_map m JOIN datasets d ON d.id = m.dataset_id GROUP BY d.slug;"
+```
+
+The loader script contains the absolute path of the CSV. If you move the CSV, edit the `\copy` line.
+
+### Step 3: Build the Deepscatter tiles
+
+```bash
+cd backend
+python -m scripts.build_deepscatter_tiles --dataset zinc250k                    # ranked (importance order)
+python -m scripts.build_deepscatter_tiles --dataset zinc250k --order shuffled   # random baseline (RQ1 ablation)
+```
+
+- **Output:** tiles are written to `data/deepscatter/<slug>/{ranked,shuffled}/` and served at `/deepscatter/<slug>/<order>/…`.
+- **From a CSV:** add `--csv <file> --slug <slug>` to build directly from a pipeline CSV, without loading it into the database first.
+- **SMILES in tiles:** `--include-smiles` stores SMILES in the tiles so that details work without the database. The tiles become about 2–3× larger.
+
+### Alternative: upload in the UI
+
+In the dataset dialog, upload a pipeline CSV (`smiles,rank,lng,lat,…`). The backend builds the tiles in a background job.
+
+### Embedding dimension
+
+`molecule_details.embedding` is `vector(167)` (MACCS). To store Morgan fingerprints (2048 bits), change the dimension in `db/init/010_schema.sql` before the database is created.
 
 ---
 
-## Loading a dataset into PostgreSQL
+## Legacy deck.gl / MVT viewer (RQ2 baseline)
 
-### 1) Prepare the loader SQL path
+The explorer toolbar also has the earlier deck.gl viewer. It reads Mapbox Vector Tiles with a rank threshold per zoom level, in one of two modes:
 
-The generated `molecules_load.sql` contains an absolute path to the CSV in its `\copy` line. Either:
-
-- Run `psql` from the directory that contains the CSV and edit the path in the SQL file, or
-- Keep the CSV next to the SQL file and use the path written by the export script.
-
-### 2) (Recommended) Clear old data
-
-If the synthetic seed or a previous dataset is already loaded:
+- **Live mode** queries PostGIS for every tile and works as soon as a dataset is in the database.
+- **Precomputed mode** reads PMTiles archives, which you build with:
 
 ```bash
-psql "$DATABASE_URL" -c "TRUNCATE molecule_map RESTART IDENTITY CASCADE;"
+cd backend
+python -m scripts.build_precomputed_tiles --dataset zinc250k --max-zoom 10
 ```
 
-### 3) Load
-
-```bash
-psql "$DATABASE_URL" -f data/molecules_load.sql
-```
-
-### 4) Verify
-
-```bash
-psql "$DATABASE_URL" -c "SELECT COUNT(*), MIN(rank), MAX(rank) FROM molecule_map;"
-curl "http://localhost:8000/bounds?dataset=zinc10k"
-```
-
-### 5) Build Deepscatter tiles
-
-```bash
-cd backend && python -m scripts.build_deepscatter_tiles --dataset zinc10k
-```
+This writes `data/tile_cache/<slug>/lod_1.pmtiles … lod_6.pmtiles`.
 
 ---
 
-## API endpoints
+## Reproduce the thesis evaluation
 
-- `GET /datasets` — list datasets (`precomputed_lods`, `deepscatter_orders`)
-- `GET /deepscatter/{slug}/{order}/{path}` — static quadfeather tile files (`order`: `ranked`|`shuffled`)
-- `GET /molecules/{id}?dataset=` — click detail (SMILES, rank, coords)
-- `GET /bounds` — dataset bounding box, count, rank range
-- `GET /datasets/{slug}/pmtiles/{lod}.pmtiles` — legacy precomputed MVT archive
-- `GET /datasets/{slug}/tiles-manifest` — legacy PMTiles bake metadata
-- `GET /tiles/{z}/{x}/{y}.mvt?rank_max=N` — legacy live MVT tile
-- `GET /points.pb?…` — Protobuf viewport query (optional)
-
-### Deepscatter LOD model
-
-1. Export molecules sorted by **`rank` ascending** (`x`,`y` from UMAP; optional `id`,`rank`,`smiles`).
-2. Run **quadfeather** → nested Feather tile tree (row order = quadtree priority).
-3. Frontend Deepscatter draws with a **`max_points`** budget (LOD slider) and colors by `rank`.
-4. For RQ1, build a second tree with `--order shuffled` (same points, different file order).
-
-### Legacy precomputed tiles (PMTiles)
+All scripts run from `backend/` with `DATABASE_URL` set. Results go to `data/eval_*/` as CSV tables, figures, and a Markdown summary.
 
 ```bash
-pip install mercantile pmtiles
-export DATABASE_URL="postgresql://app:app@localhost:5432/molecules"
-python -m scripts.build_precomputed_tiles --dataset zinc10k --max-zoom 12
+# RQ1: ranked vs shuffled prefixes (fill distance, cluster coverage, scaffolds, redundancy)
+python -m scripts.eval_rq1 --datasets zinc10k zinc250k chembl13m
+
+# RQ1, large libraries: 10 shuffle seeds, cluster round-robin baseline,
+# and the exact-vs-hierarchical FPS "bridge" on 25,000-molecule subsamples
+python -m scripts.eval_rq1_large --datasets zinc250k chembl13m --shuffle-seeds 10 --bridge-n 25000
+
+# RQ2: asset sizes and cold-load transfer (needs the backend running on :8000)
+python -m scripts.eval_rq2 --api-base http://127.0.0.1:8000 --repeats 3
 ```
 
-Outputs under `data/tile_cache/<slug>/lod_1.pmtiles` … `lod_6.pmtiles`.
+Two things to know before rerunning these:
+
+- **RQ2 tiles fetched:** the thesis's RQ2 numbers came from a version of `eval_rq2.py` that downloaded the *complete* Deepscatter tree. The thesis documents this. The current script fetches only tiles up to quadtree depth 2 (`OVERVIEW_MAX_DEPTH`).
+- **Tile size:** the RQ2 asset sizes in the thesis refer to tiles built *without* `--include-smiles`. Build without it if you want comparable numbers.
 
 ---
 
-## Notes
+## Static build (chemmaps.de)
 
-- Ranks are **globally unique** (`1` … `N`). In Deepscatter, low ranks appear earlier in the file and therefore in coarser quadtree levels.
-- Deepscatter is licensed **NC-CC-BY-SA** (fine for thesis; document it).
-- Ranking details: [`docs/ranking_algorithm_presentation.md`](docs/ranking_algorithm_presentation.md)
+The frontend also runs **without a backend** when it is built with `VITE_STATIC=true`. In static mode:
+
+- **Datasets:** the catalog comes from `frontend/src/staticDatasets.json`.
+- **Tiles:** loaded from `frontend/public/deepscatter/<slug>/<order>/`.
+- **Structures:** drawn in the browser from the SMILES stored in the tiles, using `smiles-drawer`. In the full stack they come from the backend (RDKit).
+- **Hidden features:** upload, delete, and the legacy MVT viewer.
+
+To run static mode locally:
+
+```bash
+# 1. Build tiles that contain SMILES (needed for structure drawings without a backend)
+cd backend
+python -m scripts.build_deepscatter_tiles --dataset zinc250k --include-smiles
+python -m scripts.build_deepscatter_tiles --dataset zinc250k --order shuffled --include-smiles
+
+# 2. Copy them into the frontend (gitignored on main) and list the dataset in src/staticDatasets.json
+mkdir -p ../frontend/public/deepscatter
+cp -r ../data/deepscatter/zinc250k ../frontend/public/deepscatter/
+
+# 3. Run or build
+cd ../frontend
+npm run dev:static      # local preview without a backend
+npm run build:pages     # production build into frontend/dist
+```
+
+**Deployment.** The [`static-gh-pages`](https://github.com/schwedeErik/MoleculeViewer/tree/static-gh-pages) branch adds three things to this code:
+
+- the bundled tile trees under `frontend/public/deepscatter/`,
+- `frontend/public/CNAME`,
+- a GitHub Actions workflow that publishes `frontend/dist` to GitHub Pages under `chemmaps.de`.
+
+Pushing to that branch redeploys the site. To ship frontend changes from `main`, merge `main` into `static-gh-pages`.
+
+---
+
+## Database migrations
+
+`db/init/` applies only to a **fresh** database volume. A database created by an older version may still have the single `molecules` table. To upgrade one, run the migrations in `db/migrations/` once, in order:
+
+```bash
+psql "$DATABASE_URL" -f db/migrations/030_multidataset.sql
+psql "$DATABASE_URL" -f db/migrations/040_map_details.sql
+```
+
+To start over instead, run `docker compose down -v` (this deletes all loaded data).
+
+---
+
+## API
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/health` | Liveness check |
+| GET | `/datasets` | List datasets with their available tile variants |
+| POST | `/datasets` | Upload a pipeline CSV and start an import job |
+| GET | `/datasets/jobs/{job_id}` | Import job progress |
+| DELETE | `/datasets/{slug}` | Delete a dataset and its tiles |
+| GET | `/deepscatter/{slug}/{order}/{path}` | Static quadfeather tile files (`ranked` / `shuffled`) |
+| GET | `/molecules/{id}?dataset=` | Molecule details (SMILES, rank, coordinates) |
+| GET | `/molecules/{id}/structure.svg?dataset=` | RDKit structure depiction |
+| GET | `/bounds?dataset=` | Bounding box, count, and rank range |
+| GET | `/tiles/{z}/{x}/{y}.mvt?dataset=&rank_max=` | Legacy live vector tile |
+| GET | `/datasets/{slug}/pmtiles/{lod}.pmtiles` | Legacy precomputed vector-tile archive |
+| GET | `/datasets/{slug}/tiles-manifest` | Metadata of the precomputed archives |
+
+## How the level of detail works
+
+- **Row order is the importance order.** Molecules are sorted by rank and written to a quadfeather tile tree, so each row's index in the files equals its rank − 1.
+- **Deepscatter draws a rank prefix.** It draws every point inside the viewport whose index is at most `max_points · zoom^1.6`, where `zoom_balance` = 0.2.
+- **What that means on screen:** the full view shows exactly the `max_points` best-ranked molecules, and zooming in reveals further ranks.
+- **Effect of the shuffled tree:** a tree built in shuffled order shows a uniformly random subset of the same size instead.
+
+## Licenses and notes
+
+- Deepscatter is licensed CC BY-NC-SA 4.0.
+- The default credentials and the permissive CORS setting are for local development only.

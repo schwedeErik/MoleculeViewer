@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { apiBase } from './config';
-import { DEFAULT_LOD_LEVEL } from './deepscatterLod';
+import { DEFAULT_LOD_LEVEL } from './rankLod';
 
 type ViewState = {
   longitude: number;

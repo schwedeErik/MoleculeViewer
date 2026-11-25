@@ -1,1 +1,0 @@
-{"root":["./src/App.tsx","./src/DatasetUpload.tsx","./src/DeepscatterView.tsx","./src/MoleculeMVTLayer.ts","./src/ScatterplotView.tsx","./src/deepscatter.d.ts","./src/deepscatterLod.ts","./src/main.tsx","./src/proto.ts","./src/rankLod.ts","./src/store.ts","./src/tileGrid.ts","./src/types.ts"],"version":"5.9.3"}

@@ -1,0 +1,10 @@
+dataset,renderer,asset_path,bytes_on_disk,lod_level,notes
+zinc10k,deepscatter,data/deepscatter/zinc10k/ranked,415743,3,quadfeather tree order=ranked
+zinc10k,mvt_pmtiles,data/tile_cache/zinc10k,13459836,3,all lod_1..6 PMTiles; lod_3 alone=2282233
+zinc10k,mvt_pmtiles_lod3_only,data/tile_cache/zinc10k/lod_3.pmtiles,2282233,3,single LOD archive used in online protocol
+zinc250k,deepscatter,data/deepscatter/zinc250k/ranked,10007117,3,quadfeather tree order=ranked
+zinc250k,mvt_pmtiles,data/tile_cache/zinc250k,257643338,3,all lod_1..6 PMTiles; lod_3 alone=41124668
+zinc250k,mvt_pmtiles_lod3_only,data/tile_cache/zinc250k/lod_3.pmtiles,41124668,3,single LOD archive used in online protocol
+chembl13m,deepscatter,data/deepscatter/chembl13m/ranked,54475778,3,quadfeather tree order=ranked
+chembl13m,mvt_pmtiles,data/tile_cache/chembl13m,1206552645,3,all lod_1..6 PMTiles; lod_3 alone=168278260
+chembl13m,mvt_pmtiles_lod3_only,data/tile_cache/chembl13m/lod_3.pmtiles,168278260,3,single LOD archive used in online protocol
