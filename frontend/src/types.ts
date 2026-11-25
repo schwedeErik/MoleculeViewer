@@ -9,6 +9,8 @@ export type DatasetInfo = {
   precomputed_lods?: number[];
   /** Deepscatter tile trees available: ``ranked`` and/or ``shuffled``. */
   deepscatter_orders?: Array<'ranked' | 'shuffled'>;
+  /** True when imported without Postgres molecule rows (no legacy MVT). */
+  deepscatter_only?: boolean;
 };
 
 export function embeddingMethodLabel(method: string): string {
