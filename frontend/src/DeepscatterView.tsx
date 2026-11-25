@@ -1,5 +1,6 @@
 import Scatterplot from 'deepscatter';
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { apiBase, deepscatterTilesUrl, isStatic, loadDatasetsCatalog } from './config';
 import {
   DEFAULT_LOD_LEVEL,
   LOD_STEP_COUNT,
@@ -7,12 +8,14 @@ import {
   labelForLodLevel,
   maxPointsForLodLevel
 } from './deepscatterLod';
+import { installDeepscatterBigIntFix } from './deepscatterBigIntFix';
+import { SmilesStructure } from './SmilesStructure';
 import { useAppStore } from './store';
 import type { DatasetInfo } from './types';
 
 export type DeepscatterViewProps = {
   onBack: () => void;
-  /** Switch to legacy deck.gl MVT viewer (kept for comparison). */
+  /** Switch to legacy deck.gl MVT viewer (full stack only; kept for comparison). */
   onOpenLegacyMvt?: () => void;
 };
 
@@ -33,9 +36,10 @@ type HoverInfo = {
   rank: number;
   x: number;
   y: number;
+  smiles: string | null;
 };
 
-/** The pointer must rest on a point this long before its structure is requested. */
+/** The pointer must rest on a point this long before the tooltip is shown. */
 const HOVER_DELAY_MS = 120;
 /** Mouse movement below this (px) counts as a click, not a pan. */
 const CLICK_MOVE_PX = 6;
@@ -43,11 +47,38 @@ const TOOLTIP_IMG_W = 220;
 const TOOLTIP_IMG_H = 165;
 const TOOLTIP_W = TOOLTIP_IMG_W + 18;
 const TOOLTIP_H = TOOLTIP_IMG_H + 44;
+const TOOLTIP_TEXT_H = 48;
 const TOOLTIP_OFFSET = 16;
 const DETAIL_IMG_W = 280;
 const DETAIL_IMG_H = 210;
 
-/** Hover tooltip with the 2D structure drawn by the backend (RDKit SVG). */
+/** Deepscatter's zoom-scaled index cutoff (not the same as the slider budget). */
+function readLiveMaxIx(plot: InstanceType<typeof Scatterplot> | null): number | null {
+  const v = plot?._renderer?.max_ix;
+  return typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : null;
+}
+
+function formatMapStatus(
+  name: string,
+  tileOrder: string,
+  budget: number,
+  liveIx: number | null
+): string {
+  const base = `${name} · ${tileOrder} · budget=${budget.toLocaleString()}`;
+  if (liveIx == null) return base;
+  return `${base} · live≈${liveIx.toLocaleString()}`;
+}
+
+function structureSvgUrl(slug: string, moleculeId: number, width: number, height: number): string | null {
+  if (isStatic || !apiBase) return null;
+  return (
+    `${apiBase}/molecules/${moleculeId}/structure.svg` +
+    `?dataset=${encodeURIComponent(slug)}` +
+    `&width=${width}&height=${height}`
+  );
+}
+
+/** Hover tooltip: RDKit SVG from backend, or client-side SmilesDrawer when tiles include SMILES. */
 function MoleculeTooltip({
   hover,
   structureUrl,
@@ -55,17 +86,20 @@ function MoleculeTooltip({
   areaHeight
 }: {
   hover: HoverInfo;
-  structureUrl: string;
+  structureUrl: string | null;
   areaWidth: number;
   areaHeight: number;
 }) {
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const smiles = hover.smiles?.trim() || null;
+  const showStructure = Boolean(structureUrl || smiles);
+  const boxH = showStructure ? TOOLTIP_H : TOOLTIP_TEXT_H;
+  const boxW = showStructure ? TOOLTIP_W : 160;
 
-  // Place the tooltip beside the cursor and flip it at the right / bottom edges.
   let left = hover.x + TOOLTIP_OFFSET;
-  if (left + TOOLTIP_W > areaWidth) left = hover.x - TOOLTIP_OFFSET - TOOLTIP_W;
+  if (left + boxW > areaWidth) left = hover.x - TOOLTIP_OFFSET - boxW;
   let top = hover.y + TOOLTIP_OFFSET;
-  if (top + TOOLTIP_H > areaHeight) top = hover.y - TOOLTIP_OFFSET - TOOLTIP_H;
+  if (top + boxH > areaHeight) top = hover.y - TOOLTIP_OFFSET - boxH;
 
   return (
     <div
@@ -73,7 +107,7 @@ function MoleculeTooltip({
         position: 'absolute',
         left: Math.max(4, left),
         top: Math.max(4, top),
-        width: TOOLTIP_W,
+        width: boxW,
         boxSizing: 'border-box',
         padding: 8,
         background: '#fff',
@@ -86,31 +120,49 @@ function MoleculeTooltip({
         pointerEvents: 'none'
       }}
     >
+      {showStructure && (
+        <div
+          style={{
+            width: TOOLTIP_IMG_W,
+            height: TOOLTIP_IMG_H,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: '#888'
+          }}
+        >
+          {structureUrl ? (
+            state === 'error' ? (
+              <span>No structure available</span>
+            ) : (
+              <img
+                src={structureUrl}
+                width={TOOLTIP_IMG_W}
+                height={TOOLTIP_IMG_H}
+                alt={`Structure of molecule ${hover.id}`}
+                style={{ display: 'block', opacity: state === 'ready' ? 1 : 0 }}
+                onLoad={() => setState('ready')}
+                onError={() => setState('error')}
+              />
+            )
+          ) : smiles ? (
+            <SmilesStructure
+              smiles={smiles}
+              width={TOOLTIP_IMG_W}
+              height={TOOLTIP_IMG_H}
+              alt={`Structure of molecule ${hover.id}`}
+            />
+          ) : null}
+        </div>
+      )}
       <div
         style={{
-          width: TOOLTIP_IMG_W,
-          height: TOOLTIP_IMG_H,
+          marginTop: showStructure ? 4 : 0,
           display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          color: '#888'
+          justifyContent: 'space-between',
+          gap: 8
         }}
       >
-        {state === 'error' ? (
-          <span>No structure available</span>
-        ) : (
-          <img
-            src={structureUrl}
-            width={TOOLTIP_IMG_W}
-            height={TOOLTIP_IMG_H}
-            alt={`Structure of molecule ${hover.id}`}
-            style={{ display: 'block', opacity: state === 'ready' ? 1 : 0 }}
-            onLoad={() => setState('ready')}
-            onError={() => setState('error')}
-          />
-        )}
-      </div>
-      <div style={{ marginTop: 4, display: 'flex', justifyContent: 'space-between', gap: 8 }}>
         <span>
           <strong>rank</strong> {hover.rank.toLocaleString()}
         </span>
@@ -120,14 +172,7 @@ function MoleculeTooltip({
   );
 }
 
-function tilesBaseUrl(apiBase: string, slug: string, order: TileOrder): string {
-  const path = `${apiBase}/deepscatter/${encodeURIComponent(slug)}/${order}`;
-  if (path.startsWith('http://') || path.startsWith('https://')) return path;
-  return `${window.location.origin}${path.startsWith('/') ? '' : '/'}${path}`;
-}
-
 export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProps) {
-  const apiBase = useAppStore((s) => s.apiBase);
   const datasetSlug = useAppStore((s) => s.datasetSlug);
   const setDatasetSlug = useAppStore((s) => s.setDatasetSlug);
 
@@ -136,21 +181,17 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
   const plotRef = useRef<InstanceType<typeof Scatterplot> | null>(null);
   const readyRef = useRef(false);
 
-  // Hover / click state. The refs are read inside deepscatter callbacks, which
-  // fire on every mouse move and must not depend on React re-renders.
   const [hover, setHover] = useState<HoverInfo | null>(null);
   const pointerRef = useRef({ x: 0, y: 0, buttons: 0 });
   const hoverIdRef = useRef<number | null>(null);
   const hoverTimerRef = useRef<number | null>(null);
-  /** Point currently under the cursor (Deepscatter highlight), used for click. */
   const highlitRef = useRef<{ id: number; rank: number; x: number; y: number; smiles: string | null } | null>(
     null
   );
   /**
    * Snapshot taken on pointerdown. Deepscatter's d3-zoom registers a capturing
    * window ``mouseup`` that calls stopPropagation, so React ``onMouseUp`` on the
-   * map never runs — we finish the click from a window ``pointerup`` listener
-   * instead, using this snapshot.
+   * map never runs — we finish the click from a window ``pointerup`` listener.
    */
   const pendingClickRef = useRef<{
     x: number;
@@ -159,8 +200,6 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
   } | null>(null);
   const datasetSlugRef = useRef(datasetSlug);
   datasetSlugRef.current = datasetSlug;
-  const apiBaseRef = useRef(apiBase);
-  apiBaseRef.current = apiBase;
 
   const clearHover = useCallback(() => {
     if (hoverTimerRef.current !== null) {
@@ -180,7 +219,6 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
       smiles?: string | null;
     }) => {
       const slug = datasetSlugRef.current;
-      const base = apiBaseRef.current;
       if (!slug || !Number.isFinite(datum.id) || datum.id < 0) {
         setSelected({
           id: -1,
@@ -192,16 +230,18 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
         });
         return;
       }
-      try {
-        const res = await fetch(
-          `${base}/molecules/${datum.id}?dataset=${encodeURIComponent(slug)}`
-        );
-        if (res.ok) {
-          setSelected(await res.json());
-          return;
+      if (!isStatic && apiBase) {
+        try {
+          const res = await fetch(
+            `${apiBase}/molecules/${datum.id}?dataset=${encodeURIComponent(slug)}`
+          );
+          if (res.ok) {
+            setSelected(await res.json());
+            return;
+          }
+        } catch {
+          /* tile fields fallback */
         }
-      } catch {
-        /* tile fields fallback */
       }
       setSelected({
         id: datum.id,
@@ -217,9 +257,6 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
   const selectMoleculeRef = useRef(selectMolecule);
   selectMoleculeRef.current = selectMolecule;
 
-  // Finish clicks on window pointerup. Deepscatter's d3-zoom attaches a
-  // capturing window mouseup that stopPropagation's, so map-area mouseup never
-  // runs; pointer events are not intercepted the same way.
   useEffect(() => {
     const onPointerUp = (e: PointerEvent) => {
       if (e.button !== 0) return;
@@ -238,7 +275,6 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
   const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
   const [lodLevel, setLodLevel] = useState(DEFAULT_LOD_LEVEL);
   const [order, setOrder] = useState<TileOrder>('ranked');
-  /** Base marker size in screen pixels (Deepscatter scales it with zoom via zoom_balance). */
   const [pointSize, setPointSize] = useState(1);
   const [status, setStatus] = useState<string>('Loading…');
   const [error, setError] = useState<string | null>(null);
@@ -257,20 +293,36 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
   const tilesReady = Boolean(datasetSlug && ordersAvailable.includes(order));
   const lodLabel = labelForLodLevel(lodLevel);
   const maxPoints = maxPointsForLodLevel(lodLevel);
+  const statusName = activeDataset?.name ?? datasetSlug ?? '';
+  const statusNameRef = useRef(statusName);
+  statusNameRef.current = statusName;
+  const orderRef = useRef(order);
+  orderRef.current = order;
+  const maxPointsRef = useRef(maxPoints);
+  maxPointsRef.current = maxPoints;
+
+  const refreshStatus = useCallback(() => {
+    setStatus(
+      formatMapStatus(
+        statusNameRef.current,
+        orderRef.current,
+        maxPointsRef.current,
+        readLiveMaxIx(plotRef.current)
+      )
+    );
+  }, []);
 
   useEffect(() => {
     const ac = new AbortController();
     (async () => {
       try {
-        const res = await fetch(`${apiBase}/datasets`, { signal: ac.signal });
-        if (!res.ok) return;
-        setDatasets(await res.json());
+        setDatasets(await loadDatasetsCatalog(ac.signal));
       } catch (e) {
         if ((e as Error).name === 'AbortError') return;
       }
     })();
     return () => ac.abort();
-  }, [apiBase]);
+  }, []);
 
   useEffect(() => {
     if (!activeDataset) return;
@@ -281,7 +333,6 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
     }
   }, [activeDataset, order]);
 
-  // Initial Deepscatter load (dataset / tile order).
   useEffect(() => {
     if (!datasetSlug || !tilesReady) {
       readyRef.current = false;
@@ -302,7 +353,6 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
       readyRef.current = false;
       setStatus(`Loading Deepscatter tiles (${order})…`);
 
-      // Wait for layout so the container has non-zero size (Deepscatter needs width/height).
       await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
       if (cancelled) return;
 
@@ -311,13 +361,16 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
       const height = Math.max(Math.floor(rect.height), 240);
 
       try {
-        const [boundsRes, manifestRes] = await Promise.all([
-          fetch(`${apiBase}/bounds?dataset=${encodeURIComponent(datasetSlug)}`),
-          fetch(
-            `${apiBase}/deepscatter/${encodeURIComponent(datasetSlug)}/${order}/manifest.json`
-          )
-        ]);
+        const manifestUrl = `${deepscatterTilesUrl(datasetSlug, order)}/manifest.json`;
+        const fetches: Promise<Response>[] = [fetch(manifestUrl)];
+        if (!isStatic && apiBase) {
+          fetches.push(fetch(`${apiBase}/bounds?dataset=${encodeURIComponent(datasetSlug)}`));
+        }
+        const responses = await Promise.all(fetches);
         if (cancelled) return;
+
+        const manifestRes = responses[0];
+        const boundsRes = responses[1];
 
         let zoomBbox: { x: [number, number]; y: [number, number] } | undefined;
         let maxRank = 1;
@@ -340,7 +393,7 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
           }
         }
 
-        if (boundsRes.ok) {
+        if (boundsRes?.ok) {
           const b = await boundsRes.json();
           maxRank = b.max_rank ?? maxRank;
           if (!zoomBbox && b.count) {
@@ -364,16 +417,12 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
         plot = new Scatterplot(el, width, height);
         plotRef.current = plot;
 
-        const sourceUrl = tilesBaseUrl(apiBase, datasetSlug, order);
+        const sourceUrl = deepscatterTilesUrl(datasetSlug, order);
 
-        // Do NOT pass click_function into plotAPI: deepscatter wraps it with
-        // `Function("datum", prefs.click_function)` and breaks real functions.
         await plot.plotAPI({
           source_url: sourceUrl,
           max_points: maxPoints,
-          // Lower alpha keeps dense overviews readable instead of a solid blob.
           alpha: 18,
-          // Closer to 0 → more constant screen size; closer to 1 → geographic scaling.
           zoom_balance: 0.2,
           point_size: pointSize,
           background_color: '#ffffff',
@@ -392,8 +441,8 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
 
         if (cancelled) return;
 
-        // Deepscatter only wires click to its hover circle; we also handle click
-        // ourselves on mouseup (see map area handlers) using highlitRef.
+        installDeepscatterBigIntFix(plot);
+
         plot.click_function = (datum: Record<string, unknown>) => {
           const id = Number(datum.id ?? datum.molecule_id);
           void selectMolecule({
@@ -405,9 +454,6 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
           });
         };
 
-        // Hover: deepscatter picks the point under the cursor on mouse move and
-        // reports it here. Its own tooltip (a field dump) is replaced by the
-        // React tooltip below, so it gets no content and is hidden by CSS.
         plot.tooltip_html = () => '';
         plot.highlit_point_change = (points: Record<string, unknown>[]) => {
           const point = points?.[0];
@@ -424,7 +470,6 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
             y: Number(point.y ?? 0),
             smiles: typeof point.smiles === 'string' ? point.smiles : null
           };
-          // No tooltip while a mouse button is down (panning the map).
           if (pointerRef.current.buttons !== 0) {
             clearHover();
             return;
@@ -435,14 +480,29 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
           const { x, y } = pointerRef.current;
           hoverTimerRef.current = window.setTimeout(() => {
             hoverTimerRef.current = null;
-            setHover({ id, rank: highlitRef.current?.rank ?? 0, x, y });
+            setHover({
+              id,
+              rank: highlitRef.current?.rank ?? 0,
+              x,
+              y,
+              smiles: highlitRef.current?.smiles ?? null
+            });
           }, HOVER_DELAY_MS);
+        };
+
+        plot.on_zoom = () => {
+          refreshStatus();
         };
 
         readyRef.current = true;
         setPlotReady(true);
         setStatus(
-          `${activeDataset?.name ?? datasetSlug} · ${order} · max_points=${maxPoints.toLocaleString()}`
+          formatMapStatus(
+            activeDataset?.name ?? datasetSlug,
+            order,
+            maxPoints,
+            readLiveMaxIx(plot)
+          )
         );
       } catch (e) {
         console.error('Deepscatter load failed', e);
@@ -471,9 +531,8 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
     };
     // Intentionally omit maxPoints/pointSize — those update in the next effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiBase, datasetSlug, order, tilesReady, selectMolecule, clearHover]);
+  }, [datasetSlug, order, tilesReady, selectMolecule, clearHover, refreshStatus]);
 
-  // Update draw budget / point size without reloading the tile tree.
   useEffect(() => {
     const plot = plotRef.current;
     if (!plot || !plotReady || !readyRef.current) return;
@@ -484,18 +543,22 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
         alpha: 18,
         zoom_balance: 0.2,
         duration: 400,
-        // deepscatter's start_transformations crashes if encoding is omitted
         encoding: {}
       })
       .then(() => {
-        setStatus(
-          `${activeDataset?.name ?? datasetSlug} · ${order} · max_points=${maxPoints.toLocaleString()}`
-        );
+        refreshStatus();
       })
       .catch((e) => {
         console.warn('Deepscatter update failed', e);
       });
-  }, [maxPoints, pointSize, plotReady, activeDataset?.name, datasetSlug, order]);
+  }, [maxPoints, pointSize, plotReady, activeDataset?.name, datasetSlug, order, refreshStatus]);
+
+  // Keep live≈… current while tiles stream in after zoom / LOD changes.
+  useEffect(() => {
+    if (!plotReady) return;
+    const id = window.setInterval(refreshStatus, 750);
+    return () => window.clearInterval(id);
+  }, [plotReady, refreshStatus]);
 
   const selectStyle: CSSProperties = {
     padding: '4px 8px',
@@ -522,6 +585,11 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
     onTouchStart: (e) => e.stopPropagation()
   };
 
+  const selectedStructureUrl =
+    selected && selected.id > 0 && datasetSlug
+      ? structureSvgUrl(datasetSlug, selected.id, DETAIL_IMG_W, DETAIL_IMG_H)
+      : null;
+
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <div
@@ -539,17 +607,18 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
         }}
       >
         <button type="button" style={btnStyle} onClick={onBack}>
-          ← Dataset & embedding
+          ← Dataset
         </button>
         <div style={{ fontWeight: 600 }}>Molecule Map · Deepscatter</div>
 
-        {datasets.length > 0 && datasetSlug && (
+        {datasetSlug && (
           <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
             <span>dataset</span>
             <select
               value={datasetSlug}
               onChange={(e) => setDatasetSlug(e.target.value)}
               style={selectStyle}
+              disabled={datasets.length === 0}
             >
               {datasets.map((d) => (
                 <option key={d.slug} value={d.slug}>
@@ -589,8 +658,8 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
             onChange={(e) => setLodLevel(clampLodLevel(Number(e.target.value)))}
             {...stopMapGesture}
           />
-          <span style={{ width: 88, textAlign: 'right' }}>
-            {lodLevel}/{LOD_STEP_COUNT} {lodLabel}
+          <span style={{ width: 140, textAlign: 'right', fontSize: 12 }}>
+            {lodLevel}/{LOD_STEP_COUNT} {lodLabel} ({maxPoints.toLocaleString()})
           </span>
         </label>
 
@@ -599,7 +668,7 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
           <input
             type="range"
             min={0.25}
-            max={10}
+            max={2}
             step={0.25}
             value={pointSize}
             onChange={(e) => setPointSize(Number(e.target.value))}
@@ -610,7 +679,7 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
           </span>
         </label>
 
-        {onOpenLegacyMvt && (
+        {onOpenLegacyMvt && !isStatic && (
           <button type="button" style={btnStyle} onClick={onOpenLegacyMvt}>
             Legacy MVT
           </button>
@@ -623,8 +692,6 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
         ref={mapAreaRef}
         className="ds-map-area"
         style={{ flex: 1, position: 'relative', background: '#ffffff', minHeight: 0, overflow: 'hidden' }}
-        // Capture phase: runs before deepscatter's own mousemove handler, so the
-        // pointer position is current when highlit_point_change fires.
         onPointerMoveCapture={(e) => {
           const rect = e.currentTarget.getBoundingClientRect();
           pointerRef.current = {
@@ -635,12 +702,10 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
         }}
         onPointerDownCapture={(e) => {
           if (e.button !== 0) return;
-          // Ignore UI overlays inside the map (detail panel, error banner, …).
           if ((e.target as HTMLElement | null)?.closest?.('[data-ds-ui]')) {
             pendingClickRef.current = null;
             return;
           }
-          // Snapshot the hovered point now — zoom may clear the highlight before up.
           pendingClickRef.current = {
             x: e.clientX,
             y: e.clientY,
@@ -650,12 +715,10 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
         }}
         onWheelCapture={clearHover}
         onPointerLeave={() => {
-          // Don't clear pendingClickRef here: pointer may leave during a click.
           highlitRef.current = null;
           clearHover();
         }}
       >
-        {/* Hide deepscatter's built-in tooltip; MoleculeTooltip replaces it. */}
         <style>{'.ds-map-area div.tooltip { display: none !important; }'}</style>
 
         {!tilesReady && (
@@ -678,18 +741,24 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
                 No Deepscatter tiles for this dataset
               </div>
               <div style={{ fontSize: 14, opacity: 0.9 }}>
-                From <code>backend/</code> run:
-                <pre
-                  style={{
-                    textAlign: 'left',
-                    background: '#f4f4f4',
-                    padding: 12,
-                    borderRadius: 8,
-                    overflow: 'auto',
-                    marginTop: 10
-                  }}
-                >{`python -m scripts.build_deepscatter_tiles --dataset ${datasetSlug ?? 'zinc10k'}
+                {isStatic ? (
+                  <>Add tiles under <code>frontend/public/deepscatter/{datasetSlug ?? 'slug'}/</code>.</>
+                ) : (
+                  <>
+                    From <code>backend/</code> run:
+                    <pre
+                      style={{
+                        textAlign: 'left',
+                        background: '#f4f4f4',
+                        padding: 12,
+                        borderRadius: 8,
+                        overflow: 'auto',
+                        marginTop: 10
+                      }}
+                    >{`python -m scripts.build_deepscatter_tiles --dataset ${datasetSlug ?? 'zinc10k'}
 python -m scripts.build_deepscatter_tiles --dataset ${datasetSlug ?? 'zinc10k'} --order shuffled`}</pre>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -715,20 +784,13 @@ python -m scripts.build_deepscatter_tiles --dataset ${datasetSlug ?? 'zinc10k'} 
           </div>
         )}
 
-        <div
-          ref={containerRef}
-          style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}
-        />
+        <div ref={containerRef} style={{ position: 'absolute', inset: 0, overflow: 'hidden' }} />
 
         {hover && datasetSlug && (
           <MoleculeTooltip
             key={hover.id}
             hover={hover}
-            structureUrl={
-              `${apiBase}/molecules/${hover.id}/structure.svg` +
-              `?dataset=${encodeURIComponent(datasetSlug)}` +
-              `&width=${TOOLTIP_IMG_W}&height=${TOOLTIP_IMG_H}`
-            }
+            structureUrl={structureSvgUrl(datasetSlug, hover.id, TOOLTIP_IMG_W, TOOLTIP_IMG_H)}
             areaWidth={mapAreaRef.current?.clientWidth ?? 0}
             areaHeight={mapAreaRef.current?.clientHeight ?? 0}
           />
@@ -758,14 +820,10 @@ python -m scripts.build_deepscatter_tiles --dataset ${datasetSlug ?? 'zinc10k'} 
                 Close
               </button>
             </div>
-            {selected.id > 0 && datasetSlug && (
+            {selectedStructureUrl ? (
               <img
                 key={selected.id}
-                src={
-                  `${apiBase}/molecules/${selected.id}/structure.svg` +
-                  `?dataset=${encodeURIComponent(datasetSlug)}` +
-                  `&width=${DETAIL_IMG_W}&height=${DETAIL_IMG_H}`
-                }
+                src={selectedStructureUrl}
                 width={DETAIL_IMG_W}
                 height={DETAIL_IMG_H}
                 alt={`Structure of molecule ${selected.id}`}
@@ -779,7 +837,24 @@ python -m scripts.build_deepscatter_tiles --dataset ${datasetSlug ?? 'zinc10k'} 
                   borderRadius: 6
                 }}
               />
-            )}
+            ) : selected.smiles ? (
+              <div
+                style={{
+                  marginTop: 8,
+                  border: '1px solid #eee',
+                  borderRadius: 6,
+                  overflow: 'hidden'
+                }}
+              >
+                <SmilesStructure
+                  key={selected.id}
+                  smiles={selected.smiles}
+                  width={DETAIL_IMG_W}
+                  height={DETAIL_IMG_H}
+                  alt={`Structure of molecule ${selected.id}`}
+                />
+              </div>
+            ) : null}
             <div style={{ marginTop: 8, lineHeight: 1.45 }}>
               <div>
                 <strong>rank:</strong> {selected.rank.toLocaleString()}
@@ -795,6 +870,11 @@ python -m scripts.build_deepscatter_tiles --dataset ${datasetSlug ?? 'zinc10k'} 
               {selected.smiles && (
                 <div style={{ wordBreak: 'break-all', marginTop: 6 }}>
                   <strong>SMILES:</strong> {selected.smiles}
+                </div>
+              )}
+              {!selectedStructureUrl && !selected.smiles && (
+                <div style={{ marginTop: 6, color: '#666', fontSize: 12 }}>
+                  No SMILES in these tiles — rebuild with --include-smiles for structure hover.
                 </div>
               )}
             </div>

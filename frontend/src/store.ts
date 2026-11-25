@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { apiBase } from './config';
 import { DEFAULT_LOD_LEVEL } from './rankLod';
 
 type ViewState = {
@@ -21,7 +22,7 @@ type AppState = {
 };
 
 export const useAppStore = create<AppState>((set) => ({
-  apiBase: import.meta.env.VITE_API_BASE ?? '/api',
+  apiBase,
   datasetSlug: null,
   lodLevel: DEFAULT_LOD_LEVEL,
   viewState: {

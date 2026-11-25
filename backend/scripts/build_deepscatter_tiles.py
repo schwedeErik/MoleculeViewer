@@ -278,6 +278,44 @@ def inject_deepscatter_metadata(destination: Path) -> None:
     print(f"  injected extent/children metadata into {patched} tiles", flush=True)
 
 
+def cast_ids_to_float64(destination: Path) -> None:
+    """Cast int64 ``id`` / ``rank`` / ``ix`` to float64.
+
+    Arrow int64 becomes JS BigInt; Deepscatter/d3 color scales then throw
+    ``Cannot convert a BigInt value to a number`` on hover.
+    """
+    import pyarrow as pa
+    import pyarrow.feather as feather
+
+    cast_names = {"id", "rank", "ix"}
+    patched = 0
+    for tile_path in destination.rglob("*.feather"):
+        if tile_path.name == "manifest.feather":
+            continue
+        table = feather.read_table(tile_path)
+        meta = table.schema.metadata
+        cols = []
+        names = []
+        changed = False
+        for field in table.schema:
+            col = table.column(field.name)
+            if field.name in cast_names and pa.types.is_integer(field.type):
+                col = col.cast(pa.float64())
+                changed = True
+            cols.append(col)
+            names.append(field.name)
+        if not changed:
+            continue
+        feather.write_feather(
+            pa.table(cols, names=names).replace_schema_metadata(meta),
+            tile_path,
+            compression="uncompressed",
+        )
+        patched += 1
+    if patched:
+        print(f"  cast id/rank/ix to float64 in {patched} tiles", flush=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--dataset", help="Dataset slug already loaded in Postgres")
@@ -345,6 +383,7 @@ def main() -> None:
         apply_order(ranked_csv, ordered_csv, args.order, args.seed)
         run_quadfeather(ordered_csv, dest, args.tile_size)
         inject_deepscatter_metadata(dest)
+        cast_ids_to_float64(dest)
 
         if args.keep_csv:
             kept = dest / f"export_{args.order}.csv"

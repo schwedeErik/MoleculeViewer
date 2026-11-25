@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
+import { isStatic, loadDatasetsCatalog } from './config';
 import { DatasetUpload } from './DatasetUpload';
 import { DeepscatterView } from './DeepscatterView';
 import { ScatterplotView } from './ScatterplotView';
@@ -21,21 +22,20 @@ export function App() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${apiBase}/datasets`);
-      if (!res.ok) throw new Error(`Failed to load datasets (${res.status})`);
-      const data: DatasetInfo[] = await res.json();
+      const data: DatasetInfo[] = await loadDatasetsCatalog();
       setDatasets(data);
       setSelectedSlug((prev) => {
         if (prev && data.some((d) => d.slug === prev)) return prev;
         if (datasetSlug && data.some((d) => d.slug === datasetSlug)) return datasetSlug;
-        return data[0]?.slug ?? '';
+        const preferred = data.find((d) => d.slug === 'chembl13m');
+        return preferred?.slug ?? data[0]?.slug ?? '';
       });
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [apiBase, datasetSlug]);
+  }, [datasetSlug]);
 
   useEffect(() => {
     void loadDatasets();
@@ -44,10 +44,12 @@ export function App() {
   const selectedDataset = datasets.find((d) => d.slug === selectedSlug);
 
   if (screen === 'deepscatter' && datasetSlug) {
+    const active = datasets.find((d) => d.slug === datasetSlug);
+    const allowLegacy = !isStatic && !active?.deepscatter_only;
     return (
       <DeepscatterView
         onBack={() => setScreen('setup')}
-        onOpenLegacyMvt={() => setScreen('mvt')}
+        onOpenLegacyMvt={allowLegacy ? () => setScreen('mvt') : undefined}
       />
     );
   }
@@ -86,7 +88,11 @@ export function App() {
   };
 
   const canOpen =
-    !loading && !error && selectedSlug && (selectedDataset?.molecule_count ?? 0) > 0;
+    !loading &&
+    !error &&
+    selectedSlug &&
+    ((selectedDataset?.molecule_count ?? 0) > 0 ||
+      (selectedDataset?.deepscatter_orders?.length ?? 0) > 0);
 
   async function handleDelete() {
     if (!selectedDataset) return;
@@ -143,9 +149,9 @@ export function App() {
           Molecule Map
         </h1>
         <p style={{ margin: '0 0 24px', fontSize: 14, color: '#666', lineHeight: 1.5 }}>
-          Choose a dataset loaded in PostgreSQL, or upload a new CSV export from the pipeline.
-          The main viewer uses Deepscatter (quadfeather tiles); legacy MVT remains available
-          from the map toolbar.
+          {isStatic
+            ? 'Static ChemMaps demo: choose a dataset and open the Deepscatter map. Uploads and the legacy MVT viewer need the full app with a backend.'
+            : 'Choose a dataset loaded in PostgreSQL, or upload a new CSV export from the pipeline. The main viewer uses Deepscatter (quadfeather tiles); legacy MVT remains available from the map toolbar.'}
         </p>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -159,7 +165,7 @@ export function App() {
               <div style={{ fontSize: 14, color: '#c5221f' }}>{error}</div>
             ) : datasets.length === 0 ? (
               <div style={{ fontSize: 14, color: '#666' }}>
-                No datasets yet — upload a CSV below.
+                {isStatic ? 'No datasets available.' : 'No datasets yet — upload a CSV below.'}
               </div>
             ) : (
               <select
@@ -192,24 +198,34 @@ export function App() {
                   ? selectedDataset.deepscatter_orders!.join(', ')
                   : 'not built yet'}
               </div>
-              <button
-                type="button"
-                disabled={deleting}
-                onClick={() => void handleDelete()}
-                style={{
-                  marginTop: 10,
-                  padding: '6px 12px',
-                  fontSize: 13,
-                  border: '1px solid #e0b4b4',
-                  borderRadius: 6,
-                  background: '#fff',
-                  color: '#c5221f',
-                  cursor: deleting ? 'not-allowed' : 'pointer',
-                  opacity: deleting ? 0.6 : 1
-                }}
-              >
-                {deleting ? 'Deleting…' : 'Delete dataset'}
-              </button>
+              {!isStatic && (
+                <div>
+                  <strong>Mode:</strong>{' '}
+                  {selectedDataset.deepscatter_only
+                    ? 'Deepscatter only (no Postgres / deck.gl)'
+                    : 'Full (Postgres + optional Legacy MVT)'}
+                </div>
+              )}
+              {!isStatic && (
+                <button
+                  type="button"
+                  disabled={deleting}
+                  onClick={() => void handleDelete()}
+                  style={{
+                    marginTop: 10,
+                    padding: '6px 12px',
+                    fontSize: 13,
+                    border: '1px solid #e0b4b4',
+                    borderRadius: 6,
+                    background: '#fff',
+                    color: '#c5221f',
+                    cursor: deleting ? 'not-allowed' : 'pointer',
+                    opacity: deleting ? 0.6 : 1
+                  }}
+                >
+                  {deleting ? 'Deleting…' : 'Delete dataset'}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -230,13 +246,15 @@ export function App() {
           Open Deepscatter map
         </button>
 
-        <DatasetUpload
-          apiBase={apiBase}
-          onUploaded={(dataset) => {
-            void loadDatasets();
-            setSelectedSlug(dataset.slug);
-          }}
-        />
+        {!isStatic && (
+          <DatasetUpload
+            apiBase={apiBase}
+            onUploaded={(dataset) => {
+              void loadDatasets();
+              setSelectedSlug(dataset.slug);
+            }}
+          />
+        )}
       </div>
     </div>
   );

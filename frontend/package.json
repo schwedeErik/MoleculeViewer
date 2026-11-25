@@ -5,8 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:static": "VITE_STATIC=true VITE_BASE=/ vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "build:pages": "VITE_STATIC=true tsc -b && VITE_STATIC=true vite build",
+    "preview": "vite preview",
+    "preview:pages": "VITE_STATIC=true vite preview"
   },
   "dependencies": {
     "@deck.gl/core": "^9.1.0",
@@ -21,9 +24,9 @@
     "apache-arrow": "^13.0.0",
     "deepscatter": "^2.15.2",
     "pmtiles": "^4.4.1",
-    "protobufjs": "^7.4.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "smiles-drawer": "^2.4.2",
     "zustand": "^4.5.5"
   },
   "devDependencies": {
