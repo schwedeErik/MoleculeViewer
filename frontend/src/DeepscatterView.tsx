@@ -225,7 +225,7 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
           rank: datum.rank,
           lng: datum.x,
           lat: datum.y,
-          smiles: datum.smiles ?? null,
+          smiles: datum.smiles?.trim() || null,
           name: null
         });
         return;
@@ -248,7 +248,7 @@ export function DeepscatterView({ onBack, onOpenLegacyMvt }: DeepscatterViewProp
         rank: datum.rank,
         lng: datum.x,
         lat: datum.y,
-        smiles: datum.smiles ?? null,
+        smiles: datum.smiles?.trim() || null,
         name: null
       });
     },

@@ -15,17 +15,21 @@ export function SmilesStructure({ smiles, width, height, alt }: SmilesStructureP
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [error, setError] = useState(false);
 
+  // Tile SMILES can carry trailing whitespace (e.g. a newline from the CSV export),
+  // which smiles-drawer rejects; trim before parsing.
+  const cleaned = smiles.trim();
+
   useEffect(() => {
     setError(false);
     const el = svgRef.current;
-    if (!el || !smiles.trim()) {
+    if (!el || !cleaned) {
       setError(true);
       return;
     }
     el.replaceChildren();
     const drawer = new SmilesDrawer.SvgDrawer({ width, height });
     SmilesDrawer.parse(
-      smiles,
+      cleaned,
       (tree: unknown) => {
         try {
           drawer.draw(tree, el, 'light');
@@ -35,35 +39,34 @@ export function SmilesStructure({ smiles, width, height, alt }: SmilesStructureP
       },
       () => setError(true)
     );
-  }, [smiles, width, height]);
-
-  if (error) {
-    return (
-      <div
-        style={{
-          width,
-          height,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          color: '#888',
-          fontSize: 12
-        }}
-      >
-        No structure available
-      </div>
-    );
-  }
+  }, [cleaned, width, height]);
 
   return (
-    <svg
-      ref={svgRef}
-      id={svgId}
-      width={width}
-      height={height}
-      role="img"
-      aria-label={alt ?? 'Molecule structure'}
-      style={{ display: 'block', background: '#fff' }}
-    />
+    <div style={{ position: 'relative', width, height }}>
+      <svg
+        ref={svgRef}
+        id={svgId}
+        width={width}
+        height={height}
+        role="img"
+        aria-label={alt ?? 'Molecule structure'}
+        style={{ display: 'block', background: '#fff', visibility: error ? 'hidden' : 'visible' }}
+      />
+      {error && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: '#888',
+            fontSize: 12
+          }}
+        >
+          No structure available
+        </div>
+      )}
+    </div>
   );
 }
